@@ -1,0 +1,14 @@
+build/
+install/
+log/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Never commit these here, per A4.
+*.bin
+*.hex
+*flash*dump*
+*credential*
+*.pem
+*.key
