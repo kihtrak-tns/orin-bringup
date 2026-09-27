@@ -1,0 +1,27 @@
+# Install: sudo cp laksa-health.service /etc/systemd/system/
+#          sudo systemctl daemon-reload
+#          sudo systemctl enable --now laksa-health.service
+#
+# Listen-only. Starts after the agent unit. This is the "Done when: reboot ->
+# health green with no manual steps" half of A3 -- the other half is that
+# nothing else is enabled at boot.
+
+[Unit]
+Description=LAKSA health check (listen-only)
+After=laksa-microros-agent.service
+Requires=laksa-microros-agent.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=ROS_DOMAIN_ID=0
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && \
+  source ~/laksa_ws/install/setup.bash && \
+  exec ros2 launch laksa_bringup health.launch.py'
+Restart=on-failure
+RestartSec=2
+User=laksa
+
+[Install]
+WantedBy=multi-user.target

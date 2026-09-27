@@ -1,0 +1,32 @@
+# Install: sudo cp laksa-microros-agent.service /etc/systemd/system/
+#          sudo systemctl daemon-reload
+#          sudo systemctl enable --now laksa-microros-agent.service
+#
+# Requires the udev rule (../udev/99-laksa.rules) to already be installed so
+# /dev/laksa_microros exists and is stable across replug/reboot.
+#
+# This unit does the connecting only -- it starts no health check and no
+# command publisher. Per A3, boot must bring up agent + health and nothing
+# that can command the vehicle.
+
+[Unit]
+Description=LAKSA micro-ROS agent (serial, ESP32-S3)
+After=multi-user.target dev-laksa_microros.device
+Requires=dev-laksa_microros.device
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Adjust ROS_DOMAIN_ID / setup.bash path to match the Orin's actual install.
+Environment=ROS_DOMAIN_ID=0
+ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && \
+  exec micro_ros_agent serial --dev /dev/laksa_microros -b 115200'
+Restart=on-failure
+RestartSec=2
+User=laksa
+# Uncomment once confirmed the account needs it for serial access:
+# SupplementaryGroups=dialout
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>laksa_teleop_supervisor</name>
+  <version>0.1.0</version>
+  <description>
+    Manual-drive supervisor: deadman, rate limits, stale-input brake.
+    Disabled by default (enabled parameter defaults false); never included
+    in any boot launch or systemd unit in this workspace.
+  </description>
+  <maintainer email="swathisundaravarathan@gmail.com">LAKSA team</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>laksa_interfaces</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

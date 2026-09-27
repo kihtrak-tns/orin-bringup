@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>laksa_bringup</name>
+  <version>0.1.0</version>
+  <description>
+    Boot-safe bringup for the LAKSA Orin: listen-only health check, A1a/A1b
+    verification tooling, rosbag recorder. No command publisher is enabled
+    by default anywhere in this package.
+  </description>
+  <maintainer email="swathisundaravarathan@gmail.com">LAKSA team</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>laksa_interfaces</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

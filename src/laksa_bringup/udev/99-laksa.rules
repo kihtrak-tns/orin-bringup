@@ -1,0 +1,23 @@
+# Reconstruction for reproducibility (A4: "clean clone builds" on a fresh
+# flash). The plan (orin_bringup_plan.md) records that these rules are
+# ALREADY WORKING on the current Orin -- /dev/laksa_microros and
+# /dev/laksa_lidar both resolve. Treat this file as a documented starting
+# point for re-provisioning a new Orin, not as a replacement for whatever is
+# already installed and working: before installing this, run
+#   udevadm info -a -n /dev/ttyACM0   (or wherever the device currently enumerates)
+# and cross-check idVendor/idProduct/serial against what's below, since the
+# LiDAR's exact identifiers were not in esp32_installed_firmware_findings.md
+# and are filled in here from the A2M12's typical USB-serial bridge as a
+# best guess, marked below -- confirm before trusting it.
+
+# ESP32-S3, TinyUSB CDC "LAKSA micro-ROS CDC" -- confirmed live (26 Sep 2026):
+# USB VID:PID 303a:4001, serial LAKSA-ESP32S3-001.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="4001", \
+  ATTRS{serial}=="LAKSA-ESP32S3-001", SYMLINK+="laksa_microros", MODE="0666"
+
+# Slamtec A2M12 LiDAR -- UNCONFIRMED for this unit. A2M12 typically enumerates
+# through a CP210x USB-UART bridge (Silicon Labs, VID 10c4 PID ea60). Verify
+# with `udevadm info -a -n /dev/ttyUSBx` on the actual device before relying
+# on this rule; replace idVendor/idProduct/serial with the confirmed values.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", \
+  SYMLINK+="laksa_lidar", MODE="0666"
