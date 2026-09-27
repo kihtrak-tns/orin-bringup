@@ -1,6 +1,6 @@
 # Status
 
-Orin SSH target: _fill in on first run_ (`<user>@<host-or-ip>`)
+Orin SSH target: `dev-orin` (SSH config alias on the WSL machine, in `~/.ssh/config`)
 
 Multi-agent note: `Agent` names who produced the result and may therefore set
 `Status` for that row (see CLAUDE.md's "Multi-agent coordination" section).

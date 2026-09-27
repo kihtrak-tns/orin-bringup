@@ -41,14 +41,15 @@ result file, commit, push. That's the entire sync mechanism, for every agent.
 ## Reaching the Orin
 
 SSH to the Orin over the network (no direct USB tether needed for anything
-in Phase A/E below):
+in Phase A/E below). The SSH config alias is **`dev-orin`** (set up in
+`~/.ssh/config` on the WSL machine):
 
 ```
-ssh <orin-user>@<orin-host-or-ip>
+ssh dev-orin
 ```
 
-Fill in the real host/user the first time you run this and note it at the
-top of `STATUS.md` so future runs don't have to rediscover it.
+Use `dev-orin` as the host in every rsync/ssh command below — not `orin`,
+which was a placeholder in earlier drafts of this file.
 
 ## Per-task workflow
 
@@ -57,10 +58,10 @@ For each task (A1a, A1b, A3 install, etc.):
 1. Read the task's row in `orin_bringup_plan.md` and the relevant section of
    `esp32_installed_firmware_findings.md` in the project docs (ask the human
    to paste these in if you can't reach the claude.ai project directly).
-2. `rsync -av --exclude='.git' src/ orin:~/laksa_ws/src/orin-bringup/src/` from
-   wherever this repo is checked out (WSL, not the Orin) to push the current
-   code over, then `ssh orin` and `colcon build --symlink-install` there if
-   not already built. **The Orin never runs git and never needs GitHub
+2. `rsync -av --exclude='.git' src/ dev-orin:~/laksa_ws/src/orin-bringup/src/`
+   from wherever this repo is checked out (WSL, not the Orin) to push the
+   current code over, then `ssh dev-orin` and `colcon build --symlink-install`
+   there if not already built. **The Orin never runs git and never needs GitHub
    credentials of its own** — it's a plain SSH+rsync execution target, full
    stop. All git operations (commit, push, pull) happen on the machine that
    has this repo cloned with your GitHub auth (WSL).
