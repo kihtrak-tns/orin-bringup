@@ -1,6 +1,6 @@
 # ESP32 micro-ROS link — stability investigation (2026-09-27/28)
 
-Status: **one bug fixed, one instability still open.** The open instability
+Status: **one bug fixed, one instability still open (narrowed 2026-09-28, see §4).** The open instability
 must be understood before any live command-publisher work in Phase C.
 
 Setup: `micro_ros_agent serial --dev /dev/laksa_microros -b 115200` (Humble,
@@ -72,6 +72,42 @@ Candidates worth checking (not yet tested):
 - Agent run with `-v6` to log per-message traffic and the timing of the
   teardown relative to the last data seen.
 - 115200 baud headroom versus the aggregate publish rate of 5 topics.
+
+## 4. Load experiment (2026-09-28): narrows it, doesn't settle it
+
+Full data: `results/churn_experiment_20260928T132216Z.md`. Three 15-min
+windows plus 3.4 h of extra idle observation, counting agent `delete_client`
+teardowns:
+
+| condition | resets / 15 min | CPU % |
+|---|---|---|
+| idle (14 windows) | 2–9, mean ~5.7 (~23/h) | ~2 |
+| 100% CPU busy-loop | 3 | 100 |
+| LiDAR + ZED running | 11 | 38 (GPU 11) |
+
+What this settles or narrows:
+- **The churn is present at rest, at ~23 resets/h** with only agent + health
+  running. Load is not the root cause. (The earlier "~21 s to ~63 min apart"
+  observation now reads as that idle baseline.)
+- **CPU starvation is ruled out as the mechanism:** 100% CPU on all cores
+  gave no increase.
+- **LiDAR+ZED is associated with ~2× churn** (above all 14 idle windows), at
+  lower CPU than the CPU test. n = 1, so suggestive, not proven. Not yet
+  separated: shared-hub USB traffic vs USB bus power vs DDS/GPU activity.
+- **USB topology:** one xHCI controller; the ESP32, LiDAR and ZED HID sit on
+  the same external USB 2.0 hub (the ZED video is on that hub chip's USB 3
+  half). The hub is **multi-TT**, so full-speed bandwidth starvation of the
+  ESP32 is less likely than shared power/upstream effects.
+- **Every data stall in 45 min coincided with a session reset** (1–2.5 s of
+  lost data each); the "silent, no teardown" mode was not reproduced.
+- Each reset re-arms the firmware's `/laksa/brake` latch (see the A1b
+  addendum in `docs/esp32_installed_firmware_findings.md`). At ~23/h idle and
+  ~44/h with sensors running, any command publisher **must** re-release it
+  continuously.
+
+Next discriminating tests (not run): LiDAR-only vs ZED-only windows; the
+ESP32 moved off the shared hub to its own port; a powered hub for the ZED;
+agent `-v6` and ESP32-side ping/timeout logging for the idle churn.
 
 ## Risk assessment
 
