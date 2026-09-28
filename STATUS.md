@@ -9,7 +9,7 @@ unchanged and note the disagreement in the result file instead.
 
 | Task | Status | Timestamp (UTC) | Agent | Result |
 |---|---|---|---|---|
-| A1a laksa_readonly_check | not started | | | |
+| A1a laksa_readonly_check | done — 97/97 ALL MATCH; VESC controller_id/telemetry_fresh deferred to B3 (unpowered) | 2026-09-28T02:25:25Z | local Claude Code | [results/A1a_20260928T022525Z.md](results/A1a_20260928T022525Z.md) |
 | A1b drive_command_loopback_test | not started | | | |
 | A2 LiDAR (sllidar_ros2) | not started | | | |
 | A3 laksa_bringup boot services | not started | | | |
