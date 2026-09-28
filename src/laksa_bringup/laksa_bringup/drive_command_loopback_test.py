@@ -53,8 +53,14 @@ from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReli
 
 from laksa_interfaces.msg import DriveCommand, VehicleState
 
-QOS = QoSProfile(
+COMMAND_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
+    history=QoSHistoryPolicy.KEEP_LAST,
+    depth=1,
+    durability=QoSDurabilityPolicy.VOLATILE,
+)
+STATE_QOS = QoSProfile(
+    reliability=QoSReliabilityPolicy.BEST_EFFORT,
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=1,
     durability=QoSDurabilityPolicy.VOLATILE,
@@ -97,9 +103,9 @@ def gate_or_exit(args) -> None:
 class LoopbackTestNode(Node):
     def __init__(self):
         super().__init__("laksa_drive_command_loopback_test")
-        self.pub = self.create_publisher(DriveCommand, "/laksa/command", QOS)
+        self.pub = self.create_publisher(DriveCommand, "/laksa/command", COMMAND_QOS)
         self.latest_state: VehicleState | None = None
-        self.create_subscription(VehicleState, "/laksa/state", self._on_state, QOS)
+        self.create_subscription(VehicleState, "/laksa/state", self._on_state, STATE_QOS)
 
     def _on_state(self, msg: VehicleState) -> None:
         self.latest_state = msg

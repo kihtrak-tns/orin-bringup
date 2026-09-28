@@ -26,7 +26,7 @@ from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReli
 from laksa_interfaces.msg import Pca9685State, VehicleState, VescState
 
 QOS = QoSProfile(
-    reliability=QoSReliabilityPolicy.RELIABLE,
+    reliability=QoSReliabilityPolicy.BEST_EFFORT,
     history=QoSHistoryPolicy.KEEP_LAST,
     depth=1,
     durability=QoSDurabilityPolicy.VOLATILE,
