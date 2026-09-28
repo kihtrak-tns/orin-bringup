@@ -37,10 +37,10 @@ Evidence: verified 16 MB flash backup of the car's ESP32-S3 (ROM download mode, 
 6. Keep `CONFIG_LAKSA_WEB_DASHBOARD` disabled in future builds.
 
 ## Open items
-- Run `laksa_readonly_check.py` (Pca9685State `initialized`, VescState/VehicleState layout).
+- Run `laksa_readonly_check.py` (Pca9685State `initialized`, VescState/VehicleState layout). **Done** (A1a, 26-27 Sep 2026, 97/97 and 90/90 raw==typed — see repo `results/A1a_20260928T022525Z.md`).
 - Barrel-plug voltages/polarity (Jetson, LiDAR) – needs a multimeter; Orin stays on its wall adapter until measured.
 - Motor cannot currently be unplugged; traction isolation = battery unplugged, or stand + no command publisher.
-- Unpowered continuity of GPIO17/18 ↔ VESC COMM, GPIO8/9 ↔ PCA SDA/SCL, PCA ch7 ↔ servo signal.
+- ~~Unpowered continuity of GPIO17/18 ↔ VESC COMM, GPIO8/9 ↔ PCA SDA/SCL, PCA ch7 ↔ servo signal.~~ **PCA ch7 ↔ servo signal: resolved 27 Sep 2026** — see addendum below. The PCA9685 itself answers I2C and updates its output register on logic power alone, but the servo does not physically move: confirmed with a large (0.3 rad, ~half-range) sustained command and the brake latch released, operator watching the linkage directly, no movement observed. GPIO17/18 ↔ VESC COMM and GPIO8/9 ↔ PCA SDA/SCL continuity remain open (no reason to suspect an issue, just not separately verified).
 - How the RJ45 wired stop actually interrupts propulsion.
 
 ## Addendum (27 Sep 2026): root cause of A1b's brake/steering failure — boot-default brake latch, never released
@@ -58,6 +58,6 @@ Mechanism, as written in that source:
 
 **This explains every observed symptom** and rules out a DriveCommand transport/layout bug (hypothesis b: the decode is fine) and a VESC-power-tied failsafe (hypothesis a: nothing here depends on VESC telemetry being present). It also means **the still-open micro-ROS session-churn instability re-arms this latch on every drop** — a one-time unlatch will not hold across a session reset; whatever resolves this needs to either republish on reconnect or fix the firmware's persistence.
 
-**Safety note carried forward:** until this was found, "steering never moved" was read as confirmation that battery-unplugged testing was fully inert on the actuator side. That is no longer certain — the firmware genuinely attempts to command the servo once unlatched. Whether that produces physical motion depends on whether the PCA9685/servo channel has power independent of the main battery, which is still an open item above (continuity unverified). Treat unlatching `/laksa/brake` and re-running A1b with the same caution as Phase B's "power-up steering" step (stand, wheels/steering clear) until that's confirmed, not as a routine A1b re-run.
+**Live confirmation (27 Sep 2026, A1b re-run 3, PASS 6/6).** Held `/laksa/brake=false` continuously alongside `/laksa/command` during A1b's command-publishing steps. Result: `steering_target_rad` 0.1 → 0.0981, PCA9685 servo command 100°→94° (1611→1544 µs), `brake_active` produced a real False→True transition on `brake=True`. Confirms the latch is the root cause, not (a) or (b). See `results/A1b_20260928T041406Z.md` in the repo.
 
-**Not yet done:** publishing `false` to `/laksa/brake` live has not been attempted. Pending operator confirmation of physical staging.
+**Physical-motion follow-up (27 Sep 2026, resolved).** With A1b closed, the open question of whether the servo has power independent of the main battery was checked directly: with the battery still unplugged, the brake latch released, and the operator watching the steering linkage (not just listening), a sustained large command (`steering_angle_rad=0.3`, ~half the mechanical range) produced **no physical movement**. The PCA9685 register did update (confirmed via `/laksa/pca9685/state` in A1b's own run), but the servo itself never moved. **Conclusion: the servo's actuation power is genuinely tied to the main battery, independent of USB/ESP32 logic power.** This confirms — empirically, not just by design intent — that Phase A's battery-unplugged testing has been inert on the steering actuator the whole time, and that Phase B's "power-up steering" remains the correct place to first test steering under real actuation power, on a stand with wheels clear, as originally planned.
