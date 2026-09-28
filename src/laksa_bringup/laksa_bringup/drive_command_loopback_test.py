@@ -38,9 +38,19 @@ What it does:
      for a bounded duration and confirms vesc.brake_active went False -> True
      across steps 2 -> 3. An already-True value is NOT accepted: brake_active
      is True at idle on this firmware, so reading True alone proves nothing.
-  4. Stops publishing and confirms the ESP32's own 500 ms timeout brake
-     engages on its own (vesc.command_fresh goes False, brake_active stays/
-     becomes True) -- a first, cheap look at Phase C's stop-behaviour test.
+  Steps 1 and 3 also publish std_msgs/Bool(data=False) on /laksa/brake every
+  cycle, in the same loop as DriveCommand. The firmware boots with an internal
+  brake latch (brake_requested=true) that only /laksa/brake=false releases, and
+  that is re-armed on every micro-ROS session reset. A one-shot unlatch would
+  not survive a reset, so it is held continuously. See the 27 Sep addendum in
+  docs/esp32_installed_firmware_findings.md. The idle baseline (step 0)
+  publishes nothing, so it still shows the latch as found and stays comparable
+  with the earlier A1b runs.
+  4. Stops publishing on BOTH /laksa/command and /laksa/brake and confirms
+     the ESP32's own 500 ms timeout brake engages on its own
+     (vesc.command_fresh goes False, brake_active stays/becomes True) -- a
+     first, cheap look at Phase C's stop-behaviour test. /laksa/brake must go
+     silent too, or this step would not be testing the command timeout alone.
 
 Every step prints a snapshot of steering_target_rad, vesc.brake_active,
 vesc.requested_erpm, vesc.command_fresh, vesc.telemetry_fresh and
@@ -67,7 +77,11 @@ from rclpy.node import Node
 from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
 
 from laksa_interfaces.msg import DriveCommand, Pca9685State, VehicleState
+from std_msgs.msg import Bool
 
+# Also used for /laksa/brake: the firmware creates both subscriptions with the
+# same rclc_subscription_init_default call; confirmed live 2026-09-28 with
+# `ros2 topic info --verbose` (both RELIABLE, KEEP_LAST 1, VOLATILE).
 COMMAND_QOS = QoSProfile(
     reliability=QoSReliabilityPolicy.RELIABLE,
     history=QoSHistoryPolicy.KEEP_LAST,
@@ -120,6 +134,7 @@ class LoopbackTestNode(Node):
     def __init__(self):
         super().__init__("laksa_drive_command_loopback_test")
         self.pub = self.create_publisher(DriveCommand, "/laksa/command", COMMAND_QOS)
+        self.brake_pub = self.create_publisher(Bool, "/laksa/brake", COMMAND_QOS)
         self.latest_state: VehicleState | None = None
         self.latest_pca: Pca9685State | None = None
         self.latest_pca_rx: float | None = None  # time.monotonic() at receipt
@@ -140,6 +155,9 @@ class LoopbackTestNode(Node):
         deadline = time.monotonic() + duration_s
         while rclpy.ok() and time.monotonic() < deadline:
             self.pub.publish(cmd)
+            # Hold the firmware's brake latch released for as long as we
+            # command; see the module docstring.
+            self.brake_pub.publish(Bool(data=False))
             rclpy.spin_once(self, timeout_sec=period)
 
     def stop_publishing_and_wait(self, wait_s: float) -> None:
@@ -193,7 +211,8 @@ def main(argv=None) -> int:
     node = LoopbackTestNode()
     all_ok = True
     try:
-        print(f"Idle baseline: listening for {BASELINE_WAIT_S}s without publishing...")
+        print(f"Idle baseline: listening for {BASELINE_WAIT_S}s without publishing "
+              "(nothing on /laksa/command or /laksa/brake)...")
         t0 = time.monotonic()
         node.stop_publishing_and_wait(BASELINE_WAIT_S)
         if node.latest_state is None:
@@ -206,7 +225,8 @@ def main(argv=None) -> int:
                   "DriveCommand publisher may be running.")
 
         print(f"\nPublishing steering test command for {HOLD_DURATION_S}s "
-              f"(speed_mps=0.0, steering_angle_rad={TEST_STEER_RAD}, brake=False)...")
+              f"(speed_mps=0.0, steering_angle_rad={TEST_STEER_RAD}, brake=False; "
+              f"+ /laksa/brake=false each cycle)...")
         cmd = DriveCommand()
         cmd.speed_mps = 0.0
         cmd.steering_angle_rad = TEST_STEER_RAD
@@ -233,7 +253,8 @@ def main(argv=None) -> int:
         brake_before = bool(state.vesc.brake_active)
 
         print(f"\nPublishing brake command for {HOLD_DURATION_S}s "
-              f"(speed_mps=0.0, steering_angle_rad=0.0, brake=True)...")
+              f"(speed_mps=0.0, steering_angle_rad=0.0, brake=True; "
+              f"+ /laksa/brake=false each cycle)...")
         brake_cmd = DriveCommand()
         brake_cmd.speed_mps = 0.0
         brake_cmd.steering_angle_rad = 0.0
@@ -252,8 +273,9 @@ def main(argv=None) -> int:
                "was observed" if brake_before else ""),
         )
 
-        print("\nStopping publishing; watching for the ESP32's own 500 ms "
-              "drive-command timeout to engage on its own...")
+        print("\nStopping publishing on /laksa/command AND /laksa/brake; "
+              "watching for the ESP32's own 500 ms drive-command timeout to "
+              "engage on its own...")
         t0 = time.monotonic()
         node.stop_publishing_and_wait(1.0)
         state = node.latest_state
