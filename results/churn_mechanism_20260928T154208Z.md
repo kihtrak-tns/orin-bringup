@@ -214,3 +214,13 @@ off the shared hub (away from the ZED) and repeat a W1/W3 pair.
   above).
 - Nothing else running; the LiDAR logged `Stop motor` and "finished cleanly"
   both times it ran.
+
+## Revert (2026-09-28T17:51Z)
+The operator removed the `-v6` drop-in (`rm -r …service.d`, daemon-reload,
+restart). Verified: no drop-in directory, the unit has no `-v6` or
+`StandardOutput` override, and the agent command line is back to
+`micro_ros_agent serial --dev /dev/laksa_microros -b 115200`. Both services
+are active (12:51:28 CDT, `NRestarts=0`), logging is back in the journal,
+`/laksa/state` 8.0 Hz, `/diagnostics` link OK, 0 publishers on
+`/laksa/command`. `~/churn_exp/v6/agent_v6.log` (858,592,197 bytes) is kept
+as evidence and no longer grows.
