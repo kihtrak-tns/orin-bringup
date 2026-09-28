@@ -10,7 +10,7 @@ unchanged and note the disagreement in the result file instead.
 | Task | Status | Timestamp (UTC) | Agent | Result |
 |---|---|---|---|---|
 | A1a laksa_readonly_check | done — 97/97 ALL MATCH; VESC controller_id/telemetry_fresh deferred to B3 (unpowered) | 2026-09-28T02:25:25Z | local Claude Code | [results/A1a_20260928T022525Z.md](results/A1a_20260928T022525Z.md) |
-| A1b drive_command_loopback_test | not started | | | |
+| A1b drive_command_loopback_test | FAILED — 4/6; steering echo 0.0 and brake_active stayed true (command_fresh did go true). Blocked pending firmware findings | 2026-09-28T03:13:43Z | human operator ran it; recorded by local Claude Code | [results/A1b_20260928T031343Z.md](results/A1b_20260928T031343Z.md) |
 | A2 LiDAR (sllidar_ros2) | not started | | | |
 | A3 laksa_bringup boot services | not started | | | |
 | A4 sandbox repo | done (this repo) | 2026-09-27 | cloud Claude | — |
