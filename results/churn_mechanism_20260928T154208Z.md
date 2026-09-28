@@ -126,3 +126,91 @@ entity re-creation (22.29–22.48) → publishes resume **22.495**. Data outage
   `sudo rm -r /etc/systemd/system/laksa-microros-agent.service.d && sudo systemctl daemon-reload && sudo systemctl restart laksa-microros-agent`
 - `~/churn_exp/v6/agent_v6.log` grows ~360 MB/h (841 GB free).
 - Nothing else changed (power settings at boot defaults, no usbmon).
+
+---
+
+# Part 2: bookended isolation protocol (run 2026-09-28T16:05:17Z → 17:25:45Z)
+
+Written at 2026-09-28T17:28Z. Run by: local Claude Code, unattended,
+listen-only, after the operator said "go". Run directory on the Orin:
+`~/churn_exp/iso_20260928T160516Z/`; script `~/churn_exp/run_isolation.sh`,
+analysis `~/churn_exp/analyze_iso.py`.
+
+**Setup, the same throughout:** Orin on its wall adapter; agent unchanged
+(the same `-v6` instance, PID 12721, `NRestarts=0` before and after every
+window); autosuspend untouched (Part 1 showed it is irrelevant). Exactly one
+change between windows; drivers started or stopped in uncounted settle
+periods and checked before each window. Resets were counted from the `-v6`
+agent log (`delete_client`), and each one was checked against the Part 1
+pattern: MATCH = the last in-session ping was answered by the agent in <5 ms
+**and** the ESP32's next message (its reconnect) came 90–130 ms after that
+ping. usbmon (step 5) is not possible on this kernel (`CONFIG_USB_MON` not
+set).
+
+Pre-window checks (`checks.txt`):
+| check | `/laksa/state` | `/scan` | ZED odom |
+|---|---|---|---|
+| W1 | 8.04 Hz | not published | not published |
+| W2 | 8.02 Hz | 12.73 Hz | not published |
+| W3 | 6.37 Hz | not published | 53.1 Hz |
+| W4 | 8.01 Hz | 12.95 Hz | 59.3 Hz |
+| W5 | 8.04 Hz | not published | not published |
+
+## Results
+
+| window (15 min each) | UTC | resets | MATCH | other | `/laksa/state` stalls >1 s | state Hz | CPU % | GPU % |
+|---|---|---|---|---|---|---|---|---|
+| W1 ESP32 only | 16:06:28–16:21:28 | **6** | 6 | 0 | 3 | 7.81 | 1.6 | 0.0 |
+| W2 + LiDAR | 16:22:27–16:37:27 | **8** | 8 | 0 | 7 | 7.74 | 10.2 | 0.0 |
+| W3 ZED only | 16:38:43–16:53:43 | **12** | 12 | 0 | 12 | 7.72 | 31.9 | 21.0 |
+| W4 LiDAR + ZED | 16:54:36–17:09:36 | **14** | 14 | 0 | 13 | 7.72 | 40.9 | 14.7 |
+| W5 ESP32 only (drift control) | 17:10:45–17:25:45 | **7** | 7 | 0 | 3 | 7.85 | 1.5 | 0.0 |
+
+All 9,375 in-session pings in the run: agent reply latency median
+**0.20 ms**, p99 0.55 ms, max 3.95 ms. For the 47 counted resets, the reply
+latency of the fatal ping was 0.13–0.46 ms, and the ESP32 gave up
+**101–103 ms** after its ping in every case. Per-reset list with latencies:
+`python3 ~/churn_exp/analyze_iso.py ~/churn_exp/iso_20260928T160516Z`.
+Three more resets fell in settle periods (16:05:43, 16:05:59 while
+monitors started; 16:54:09 while the LiDAR started for W4) and are not
+counted.
+
+## What this shows
+- **One mechanism under every condition.** 47/47 resets are the Part 1
+  pattern: the host answers the ping in well under 1 ms, and the ESP32 times
+  out anyway at its 100 ms limit. Load changes *how often* this happens, not
+  *what* happens.
+- **No drift:** the bookends agree (W1 6, W5 7), so the differences between
+  the middle windows aren't a time trend.
+- **The ZED is the dominant contributor:** ZED alone 12 (2× the bookends and
+  above every one of the 14 earlier idle windows, max 9); LiDAR alone 8
+  (inside the idle range 2–9, not distinguishable from idle); both 14.
+  Consistent with the earlier LiDAR+ZED = 11.
+- **CPU is still not the driver** (ruled out directly earlier). The ZED
+  windows differ from idle in USB3 traffic on the same physical hub chip,
+  ZED HID traffic on the ESP32's own USB2 hub, GPU load, and DDS traffic.
+  n = 1 per window, so the ZED effect is well supported in direction (it
+  replicates the earlier experiment), but not precise in size, and these
+  channels are not separated.
+- **Side observation:** `/laksa/state` dipped to 6.4 Hz in the W3 pre-check,
+  during ZED start-up (the ZED HID device resets on start-up: kernel
+  `usb 1-2.4.2: reset full-speed …`, same hub as the ESP32).
+
+## Conclusion (Parts 1 + 2)
+The churn is a firmware liveness check with no slack (100 ms, 1 attempt)
+tripping on replies that the host sends within ~1 ms but that don't reach
+or aren't processed by the ESP32 in time. It happens at rest (~6–7 per
+15 min in this run) and about twice as often when the ZED is running. The
+fix belongs in the firmware: tolerate several consecutive ping misses
+and/or a longer timeout (actuator safety is unaffected, since the
+independent 500 ms drive-command timeout still brakes and centres), plus
+instrumentation of the ESP32's USB-CDC receive path to find where the reply
+is lost. A cheap, reversible physical test is still open: move the ESP32
+off the shared hub (away from the ZED) and repeat a W1/W3 pair.
+
+## State left behind
+- **`-v6` drop-in still installed.** The log is 677 MB (841 GB free). The
+  operator should revert it (command in the chat and in *State left behind*
+  above).
+- Nothing else running; the LiDAR logged `Stop motor` and "finished cleanly"
+  both times it ran.

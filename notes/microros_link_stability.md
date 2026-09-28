@@ -149,6 +149,17 @@ a longer timeout before tearing down; instrument the ESP32 transport (RX
 overflow and framing/CRC error counters, ping RTT) to find where the reply
 is lost.
 
+## 7. Device isolation (2026-09-28, Part 2): ZED is the dominant load factor; same mechanism everywhere
+
+Bookended 5 × 15 min (`results/churn_mechanism_20260928T154208Z.md`, Part 2):
+ESP32 only **6** → +LiDAR **8** → ZED only **12** → LiDAR+ZED **14** → ESP32
+only **7**. **47/47 resets** show the Part 1 pattern (agent replied to the
+fatal ping in 0.13–0.46 ms; the ESP32 gave up 101–103 ms later). The bookends
+agree (no drift). The LiDAR is within idle variation; the ZED doubles the rate.
+Fix direction unchanged: firmware ping tolerance + ESP32 RX-path
+instrumentation. Open cheap test: move the ESP32 off the shared hub and repeat
+ESP32-only vs ZED-only.
+
 ## Risk assessment
 
 - **A1a:** unaffected. A read-only snapshot that passed on a live session.
