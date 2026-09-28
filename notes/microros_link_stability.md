@@ -109,6 +109,25 @@ Next discriminating tests (not run): LiDAR-only vs ZED-only windows; the
 ESP32 moved off the shared hub to its own port; a powered hub for the ZED;
 agent `-v6` and ESP32-side ping/timeout logging for the idle churn.
 
+## 5. USB autosuspend: ruled out (2026-09-28, read-only)
+
+Full data: `results/autosuspend_check_20260928T141630Z.md`. The ESP32 device
+(`power/control=on`), its USB2 hub, the USB2 root and the xHCI controller
+each show **0 ms runtime-suspended in 5.77 h since boot**
+(`active_duration == connected_duration`), and 119 session resets happened
+in that time. Autosuspend can't be the mechanism, so no change was made
+(the system is still at boot defaults). The USB3 half (ZED video + its hub)
+does autosuspend, but it sits steadily suspended at idle while idle churn
+continues, so it can't drive the idle rate. CPU DVFS is also largely covered
+already: in the load experiment's CPU condition all cores were pinned at max
+frequency for 15 min, with no change in churn. EMC/GPU DVFS (MAXN +
+`jetson_clocks`) remains an optional, low-expected-value test.
+
+With host-side power management largely set aside, the **ESP32/firmware and
+transport side is now the leading area** for the idle churn: micro-ROS
+ping/timeout and reconnect logic, executor stalls, serial framing. Agent
+`-v6` around a teardown is the next cheap look.
+
 ## Risk assessment
 
 - **A1a:** unaffected. A read-only snapshot that passed on a live session.
