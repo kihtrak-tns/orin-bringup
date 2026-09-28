@@ -128,6 +128,27 @@ transport side is now the leading area** for the idle churn: micro-ROS
 ping/timeout and reconnect logic, executor stalls, serial framing. Agent
 `-v6` around a teardown is the next cheap look.
 
+## 6. Mechanism (2026-09-28, agent -v6): the ESP32 misses a reply the host sent on time
+
+Full data: `results/churn_mechanism_20260928T154208Z.md`. The firmware tears
+the session down after one failed ping (100 ms timeout, every 500 ms, no
+retries; `micro_ros_bridge.c:33-39, 585-593`). With the agent at `-v6`, all
+4 captured teardowns follow the same pattern: the ESP32's last ping reached
+the agent, and **the agent replied in 0.36–0.42 ms**, yet **~107 ms later**
+the ESP32 started reconnecting. Over 646 pings, agent reply latency was
+median 0.38 ms, p99 0.72 ms. The reply is lost or late on the host→ESP32
+leg, or not read by the ESP32 within 100 ms. The host/kernel/agent side is
+not the late party. No kernel USB events on the ESP32 path across 123 resets;
+usbmon is unavailable (`CONFIG_USB_MON` not set).
+
+Secondary: each teardown costs ~1 s of data because the agent deletes the
+~20 old DDS entities at ~100 ms each before re-establishing.
+
+Leading fix direction (firmware): tolerate N consecutive ping failures and/or
+a longer timeout before tearing down; instrument the ESP32 transport (RX
+overflow and framing/CRC error counters, ping RTT) to find where the reply
+is lost.
+
 ## Risk assessment
 
 - **A1a:** unaffected. A read-only snapshot that passed on a live session.
