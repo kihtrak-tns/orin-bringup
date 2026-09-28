@@ -33,4 +33,7 @@ User=karsha
 # SupplementaryGroups=dialout
 
 [Install]
-WantedBy=multi-user.target
+# dev-laksa_microros.device: restart the agent when the ESP32 is re-plugged.
+# Requires= above stops it on unplug; without this nothing starts it again.
+# Needs `systemctl reenable` after install so the .wants/ link is created.
+WantedBy=multi-user.target dev-laksa_microros.device

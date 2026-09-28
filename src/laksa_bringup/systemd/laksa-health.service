@@ -24,4 +24,6 @@ RestartSec=2
 User=karsha
 
 [Install]
-WantedBy=multi-user.target
+# laksa-microros-agent.service: come back whenever the agent is (re)started,
+# e.g. after an ESP32 re-plug (Requires= stops health along with the agent).
+WantedBy=multi-user.target laksa-microros-agent.service
