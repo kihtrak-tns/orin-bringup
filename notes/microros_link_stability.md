@@ -174,6 +174,15 @@ would confirm). **The ESP32 now lives on USB-C**; the boot test on USB-C,
 the hotplug restart of the agent, and the firmware ping tolerance remain
 follow-ups.
 
+## 9. Boot with the ESP32 on USB-C: holds (2026-09-28T19:27Z)
+
+Reboot (boot_id `280693a1-…`), nothing run by hand: the `fusb301` Type-C
+controller brought the USB-C port up as host (DFP) at boot+11.9 s, the
+ESP32 enumerated at `1-1` at 12.2 s (`ttyACM0`, `/dev/laksa_microros`),
+agent + health active at boot+14 s (`NRestarts=0`), session at 16.4 s,
+`/diagnostics` link OK, IMU 40.3 Hz, 0 resets in the first ~3 min. USB-C
+is fine as the standing ESP32 placement for boot.
+
 ## Risk assessment
 
 - **A1a:** unaffected. A read-only snapshot that passed on a live session.
