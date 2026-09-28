@@ -12,7 +12,7 @@ unchanged and note the disagreement in the result file instead.
 | A1a laksa_readonly_check | done — 97/97 ALL MATCH; VESC controller_id/telemetry_fresh deferred to B3 (unpowered) | 2026-09-28T02:25:25Z | local Claude Code | [results/A1a_20260928T022525Z.md](results/A1a_20260928T022525Z.md) |
 | A1b drive_command_loopback_test | done — PASS 6/6 on re-run 3 with /laksa/brake=false held during command steps; confirms the boot-default brake latch root cause ([findings addendum](docs/esp32_installed_firmware_findings.md)). Open: did the servo physically move with the battery unplugged (operator to confirm); latch re-arms on session reset, so every command publisher must hold /laksa/brake=false | 2026-09-28T04:14:06Z | human operator ran it; recorded by local Claude Code | [re-run 3](results/A1b_20260928T041406Z.md), [re-run 2](results/A1b_20260928T033612Z.md), [run 1](results/A1b_20260928T031343Z.md) |
 | A2 LiDAR (sllidar_ros2) | not started | | | |
-| A3 laksa_bringup boot services | not started | | | |
+| A3 laksa_bringup boot services | done — reboot → agent + health active (NRestarts=0), /diagnostics fresh, link/PCA/IMU OK, VESC WARN (unpowered); 0 publishers on /laksa/command and /laksa/brake. Units fixed first (uros_ws sourcing, ros2 run exec, User=karsha, ordering cycle); udev diffed only | 2026-09-28T04:56:45Z | local Claude Code (operator ran the sudo install + reboot) | [results/A3_20260928T045645Z.md](results/A3_20260928T045645Z.md) |
 | A4 sandbox repo | done (this repo) | 2026-09-27 | cloud Claude | — |
 | A5 ZED 2i | not started | | | |
 | A6 rosbag recording | not started | | | |
