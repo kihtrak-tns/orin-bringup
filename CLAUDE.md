@@ -56,8 +56,11 @@ which was a placeholder in earlier drafts of this file.
 For each task (A1a, A1b, A3 install, etc.):
 
 1. Read the task's row in `orin_bringup_plan.md` and the relevant section of
-   `esp32_installed_firmware_findings.md` in the project docs (ask the human
-   to paste these in if you can't reach the claude.ai project directly).
+   `docs/esp32_installed_firmware_findings.md` in this repo — that is the
+   primary, always-reachable copy; read it directly, don't ask for it to be
+   pasted. (The cloud Claude edits/adds findings in the claude.ai LAKSA
+   project first, and this repo copy is synced from there afterward — not the
+   other way around.)
 2. `rsync -av --exclude='.git' src/ dev-orin:~/laksa_ws/src/orin-bringup/src/`
    from wherever this repo is checked out (WSL, not the Orin) to push the
    current code over, then `ssh dev-orin` and `colcon build --symlink-install`
