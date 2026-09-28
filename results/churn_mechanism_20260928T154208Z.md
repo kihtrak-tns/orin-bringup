@@ -329,3 +329,12 @@ hub. Recommended to stay there. Follow-ups this creates:
 - **`-v6` drop-in installed again** (for these windows). The operator should
   revert: `sudo rm -r /etc/systemd/system/laksa-microros-agent.service.d && sudo systemctl daemon-reload && sudo systemctl restart laksa-microros-agent`
 - Nothing else running; ZED stopped at 18:49:40Z.
+
+## Revert after Part 3 (2026-09-28T19:09Z)
+The operator removed the `-v6` drop-in again. Verified: no drop-in directory,
+no `-v6`/`StandardOutput` override, the agent is back to
+`micro_ros_agent serial --dev /dev/laksa_microros -b 115200` (active
+14:09:01 CDT, `NRestarts=0`), the ESP32 is still at `usb1/1-1` (USB-C),
+`/laksa/imu/data` 39.9 Hz, 0 publishers on `/laksa/command`.
+`~/churn_exp/v6/agent_v6.log` (1,335,678,432 bytes) is kept as evidence and no
+longer grows.
