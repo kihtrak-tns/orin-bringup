@@ -11,9 +11,10 @@ what rclpy handed us, is the only way to catch that class of mismatch instead
 of trusting the deserializer that could itself be the thing that's wrong.
 
 Only plain (non-string, non-sequence) fixed-layout messages are supported --
-that covers VescState and Pca9685State, which is all laksa_readonly_check.py
-needs. Do not extend this to variable-length fields without also handling
-CDR's length-prefix + alignment rules for them.
+that covers VescState, Pca9685State and VehicleState (including its nested
+geometry_msgs float64 fields), which is all laksa_readonly_check.py needs.
+Do not extend this to variable-length fields without also handling CDR's
+length-prefix + alignment rules for them.
 """
 from __future__ import annotations
 
@@ -25,10 +26,14 @@ class CDRReader:
 
     The first 4 bytes of any ROS 2 serialized message are the encapsulation
     header (representation id + options), not message data. Alignment for
-    every subsequent field is computed relative to the start of that header
-    (position 0), matching what the OMG CDR spec and rclcpp/rclpy generated
-    (de)serializers do.
+    every subsequent field is computed relative to the end of that header
+    (the start of the message body), matching what Fast-CDR / Micro-CDR and
+    rclcpp/rclpy generated (de)serializers do. For 1/2/4-byte fields this is
+    indistinguishable from aligning to position 0 (the header is 4 bytes);
+    it only matters for 8-byte fields such as float64.
     """
+
+    _BODY_ORIGIN = 4
 
     def __init__(self, data: bytes):
         self.data = data
@@ -45,7 +50,7 @@ class CDRReader:
         self.pos = 4
 
     def _align(self, n: int) -> None:
-        rem = self.pos % n
+        rem = (self.pos - self._BODY_ORIGIN) % n
         if rem:
             self.pos += n - rem
 
@@ -79,6 +84,12 @@ class CDRReader:
         self._align(4)
         v = struct.unpack_from("<f", self.data, self.pos)[0]
         self.pos += 4
+        return v
+
+    def read_f64(self) -> float:
+        self._align(8)
+        v = struct.unpack_from("<d", self.data, self.pos)[0]
+        self.pos += 8
         return v
 
     def read_time(self) -> tuple[int, int]:

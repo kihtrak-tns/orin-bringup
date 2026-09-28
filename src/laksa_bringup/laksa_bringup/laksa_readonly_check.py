@@ -11,18 +11,25 @@ It checks two independent things and requires BOTH to pass:
 
 1. Sanity check on decoded values: fields that should hold known constants
    right now (I2C address 0x40, PWM frequency 50 Hz, steering channel 7,
-   VESC controller_id 83, fault_code 0) actually do, using rclpy's normal
-   typed deserialization.
+   fault_code 0) actually do, using rclpy's normal typed deserialization.
+
+   VESC controller_id == 83 and telemetry_fresh can only hold once the VESC
+   is powered from the main battery and has answered the ESP32 over UART.
+   Phase A runs with the battery unplugged, so by default those two are
+   reported as [INFO] and do not affect the exit status; pass --vesc-powered
+   (Phase B, task B3) to make them hard checks again.
 
 2. Raw-byte cross-check: for the same topics, an independent CDR decoder
    (_cdr.py), built from the message field order without going through
-   rclpy's deserializer, is run against the raw wire bytes. Its output is
+   rclpy's deserializer, is run against the raw wire bytes of all three
+   topics (VehicleState including its nested VescState). Its output is
    compared field-by-field against what rclpy decoded. rclpy will "succeed"
    even if laksa_interfaces doesn't match the firmware's real layout --
    Humble does not check type hashes across the wire -- so a raw decode that
    agrees with rclpy is real evidence the layout is right, not an assumption.
 
-Exit status: 0 only if every check across both methods passes ("ALL MATCH").
+Exit status: 0 only if every non-[INFO] check across both methods passes
+("ALL MATCH"). The raw==typed checks are never informational.
 Any mismatch must be resolved by comparing against firmware evidence
 (esp32_installed_firmware_findings.md) -- never by patching this script's
 expected values until it goes green.
@@ -30,10 +37,12 @@ expected values until it goes green.
 Usage:
     ros2 run laksa_bringup laksa_readonly_check
     ros2 run laksa_bringup laksa_readonly_check --timeout 15
+    ros2 run laksa_bringup laksa_readonly_check --vesc-powered   # B3 only
 """
 from __future__ import annotations
 
 import argparse
+import functools
 import sys
 import threading
 import time
@@ -67,6 +76,9 @@ class CheckResult:
     name: str
     passed: bool
     detail: str = ""
+    # Reported but not counted toward the exit status (e.g. VESC-powered-only
+    # checks while the main battery is unplugged).
+    informational: bool = False
 
 
 @dataclass
@@ -79,7 +91,10 @@ class TopicState:
 
 
 def decode_vesc_state_raw(data: bytes) -> dict:
-    r = CDRReader(data)
+    return _read_vesc_state(CDRReader(data))
+
+
+def _read_vesc_state(r: CDRReader) -> dict:
     out = {}
     out["stamp"] = r.read_time()
     out["command_fresh"] = r.read_bool()
@@ -137,6 +152,35 @@ def decode_pca9685_state_raw(data: bytes) -> dict:
     return out
 
 
+def _read_vector3(r: CDRReader) -> dict:
+    return {"x": r.read_f64(), "y": r.read_f64(), "z": r.read_f64()}
+
+
+def decode_vehicle_state_raw(data: bytes) -> dict:
+    """Flattened to dotted keys (e.g. "orientation.w", "vesc.controller_id")."""
+    r = CDRReader(data)
+    out = {}
+    out["stamp"] = r.read_time()
+    out["imu_available"] = r.read_bool()
+    for k in ("x", "y", "z", "w"):
+        out[f"orientation.{k}"] = r.read_f64()
+    out["orientation_accuracy_rad"] = r.read_f32()
+    for vec in ("angular_velocity_rad_s", "linear_acceleration_m_s2", "magnetic_field_t"):
+        for k, v in _read_vector3(r).items():
+            out[f"{vec}.{k}"] = v
+    for k, v in _read_vesc_state(r).items():
+        if k != "stamp":
+            out[f"vesc.{k}"] = v
+    out["steering_target_rad"] = r.read_f32()
+    out["steering_current_rad"] = r.read_f32()
+    out["steering_endpoint_relief_active"] = r.read_bool()
+    return out
+
+
+def _getattr_path(obj, dotted: str):
+    return functools.reduce(getattr, dotted.split("."), obj)
+
+
 def compare(name: str, raw: dict, typed_getter, tolerance: float = 1e-4) -> list[CheckResult]:
     results = []
     for key, raw_val in raw.items():
@@ -158,9 +202,10 @@ def compare(name: str, raw: dict, typed_getter, tolerance: float = 1e-4) -> list
 
 
 class ReadonlyCheckNode(Node):
-    def __init__(self, timeout_s: float):
+    def __init__(self, timeout_s: float, vesc_powered: bool = False):
         super().__init__("laksa_readonly_check")
         self.timeout_s = timeout_s
+        self.vesc_powered = vesc_powered
         self.pca_state = TopicState()
         self.vesc_state = TopicState()
         self.vehicle_state = TopicState()
@@ -251,11 +296,16 @@ class ReadonlyCheckNode(Node):
                 f"got {pca.steering_pwm_channel}",
             )
         )
+        unpowered_note = (
+            "" if self.vesc_powered
+            else "; expected while VESC is unpowered (battery unplugged) -- re-verify in B3"
+        )
         results.append(
             CheckResult(
                 "vesc.controller_id == 83",
                 vesc.controller_id == EXPECTED_VESC_CONTROLLER_ID,
-                f"got {vesc.controller_id}",
+                f"got {vesc.controller_id}{unpowered_note}",
+                informational=not self.vesc_powered,
             )
         )
         results.append(
@@ -265,7 +315,15 @@ class ReadonlyCheckNode(Node):
                 f"got {vesc.fault_code}",
             )
         )
-        results.append(CheckResult("vesc.telemetry_fresh", bool(vesc.telemetry_fresh)))
+        results.append(
+            CheckResult(
+                "vesc.telemetry_fresh",
+                bool(vesc.telemetry_fresh),
+                f"telemetry_sequence={vesc.telemetry_sequence} "
+                f"telemetry_age_ms={vesc.telemetry_age_ms}{unpowered_note}",
+                informational=not self.vesc_powered,
+            )
+        )
         results.append(CheckResult("vehicle.imu_available", bool(veh.imu_available)))
 
         # --- Raw-byte cross-check ---
@@ -275,6 +333,13 @@ class ReadonlyCheckNode(Node):
         vesc_raw = decode_vesc_state_raw(self.vesc_state.raw_bytes)
         results += compare("vesc", vesc_raw, lambda k: getattr(vesc, k))
 
+        # Same bytes, so float fields must match exactly (no tolerance) --
+        # magnetic_field_t is ~1e-5 T, below compare()'s default tolerance.
+        veh_raw = decode_vehicle_state_raw(self.vehicle_state.raw_bytes)
+        results += compare(
+            "vehicle", veh_raw, lambda k: _getattr_path(veh, k), tolerance=0.0
+        )
+
         return results
 
 
@@ -283,10 +348,15 @@ def main(argv=None) -> int:
     parser.add_argument(
         "--timeout", type=float, default=10.0, help="seconds to wait for one sample of each topic"
     )
+    parser.add_argument(
+        "--vesc-powered",
+        action="store_true",
+        help="VESC is powered (Phase B3+): make controller_id/telemetry_fresh hard checks",
+    )
     args = parser.parse_args(argv)
 
     rclpy.init()
-    node = ReadonlyCheckNode(timeout_s=args.timeout)
+    node = ReadonlyCheckNode(timeout_s=args.timeout, vesc_powered=args.vesc_powered)
     try:
         deadline = time.monotonic() + args.timeout
         while rclpy.ok() and time.monotonic() < deadline and not node.have_all_topics():
@@ -314,21 +384,29 @@ def main(argv=None) -> int:
         node.destroy_node()
         rclpy.shutdown()
 
-    failed = [r for r in results if not r.passed]
+    counted = [r for r in results if not r.informational]
+    failed = [r for r in counted if not r.passed]
+    info = [r for r in results if r.informational]
     for r in results:
-        mark = "PASS" if r.passed else "FAIL"
+        if r.informational:
+            mark = "INFO" if not r.passed else "PASS"
+        else:
+            mark = "PASS" if r.passed else "FAIL"
         line = f"[{mark}] {r.name}"
         if r.detail:
             line += f"  ({r.detail})"
         print(line)
 
     print()
+    if info:
+        print(f"{len(info)} informational check(s) not counted (VESC unpowered; "
+              f"re-run with --vesc-powered in B3).")
     if failed:
-        print(f"{len(failed)}/{len(results)} checks FAILED -- do NOT enable any command "
+        print(f"{len(failed)}/{len(counted)} checks FAILED -- do NOT enable any command "
               f"publisher. Resolve against esp32_installed_firmware_findings.md first.")
         return 1
 
-    print(f"ALL MATCH ({len(results)}/{len(results)} checks passed).")
+    print(f"ALL MATCH ({len(counted)}/{len(counted)} checks passed).")
     return 0
 
 
