@@ -11,7 +11,10 @@
 
 [Unit]
 Description=LAKSA micro-ROS agent (serial, ESP32-S3)
-After=multi-user.target dev-laksa_microros.device
+# No After=multi-user.target: with WantedBy=multi-user.target that is an
+# ordering cycle (targets order themselves After= the units they want), and
+# systemd may break it at boot by dropping this unit's start job.
+After=dev-laksa_microros.device
 Requires=dev-laksa_microros.device
 StartLimitIntervalSec=60
 StartLimitBurst=5
@@ -21,10 +24,11 @@ Type=simple
 # Adjust ROS_DOMAIN_ID / setup.bash path to match the Orin's actual install.
 Environment=ROS_DOMAIN_ID=0
 ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && \
-  exec micro_ros_agent serial --dev /dev/laksa_microros -b 115200'
+  source ~/uros_ws/install/setup.bash && \
+  exec ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/laksa_microros -b 115200'
 Restart=on-failure
 RestartSec=2
-User=laksa
+User=karsha
 # Uncomment once confirmed the account needs it for serial access:
 # SupplementaryGroups=dialout
 

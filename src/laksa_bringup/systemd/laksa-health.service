@@ -21,7 +21,7 @@ ExecStart=/bin/bash -lc 'source /opt/ros/humble/setup.bash && \
   exec ros2 launch laksa_bringup health.launch.py'
 Restart=on-failure
 RestartSec=2
-User=laksa
+User=karsha
 
 [Install]
 WantedBy=multi-user.target
