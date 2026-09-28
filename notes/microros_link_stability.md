@@ -160,6 +160,20 @@ Fix direction unchanged: firmware ping tolerance + ESP32 RX-path
 instrumentation. Open cheap test: move the ESP32 off the shared hub and repeat
 ESP32-only vs ZED-only.
 
+## 8. ESP32 moved off the shared hub (2026-09-28, Part 3): churn gone, full topic rates
+
+Full data: `results/churn_mechanism_20260928T154208Z.md`, Part 3. Every USB-A
+port on this carrier sits behind one on-board Realtek hub. With the ESP32
+moved to the **USB-C port** (its own root port, same controller): **0
+resets** in 15 min ESP32-only (hub era: 6–7) and **0** in 15 min ZED-only (hub
+era: 12). 0 teardowns in 35.7 min continuous. The ESP32's topics also
+recovered to nominal (IMU 40.4 Hz vs 24–28 on the hub; `/laksa/state` 9.8 vs
+~8 Hz). The hub path was both starving the ESP32's traffic and causing the
+missed ping replies. Confound: the move rebooted the ESP32 (an A/B/A move-back
+would confirm). **The ESP32 now lives on USB-C**; the boot test on USB-C,
+the hotplug restart of the agent, and the firmware ping tolerance remain
+follow-ups.
+
 ## Risk assessment
 
 - **A1a:** unaffected. A read-only snapshot that passed on a live session.

@@ -224,3 +224,108 @@ are active (12:51:28 CDT, `NRestarts=0`), logging is back in the journal,
 `/laksa/state` 8.0 Hz, `/diagnostics` link OK, 0 publishers on
 `/laksa/command`. `~/churn_exp/v6/agent_v6.log` (858,592,197 bytes) is kept
 as evidence and no longer grows.
+
+---
+
+# Part 3: ESP32 moved off the shared hub onto the Orin's USB-C port — **RAN** (2026-09-28T18:17Z → 18:49Z)
+
+Run by: local Claude Code (analysis, listen-only) + operator (cable move,
+sudo re-install of the `-v6` drop-in and service restart). Run directory:
+`~/churn_exp/hubsep_20260928T181712Z/` (script `run_hubsep.sh`, same method
+and analysis as Part 2).
+
+## Step 0: feasibility (device tree + sysfs)
+One xHCI controller (`3610000.usb`). Its USB2 pads: `usb2-0` = **OTG → the
+USB-C port** (role switch `usb2-0-role-switch`, `none` while empty);
+`usb2-1` = host → the carrier board's **on-board Realtek hub** (1-2 USB2
+half 0bda:5489 + 2-1 USB3 half 0bda:0489) that provides **all four USB-A
+ports**; `usb2-2` = host → M.2 Key-E (Bluetooth). So no USB-A port avoids the
+hub. The USB-C port is the only path that does, but it's still on the one
+controller (no controller-independent port exists on this board).
+
+## Step 1: after the move
+- The operator moved the ESP32's cable (Orin end only) from USB-A (hub port
+  1-2.3) to the USB-C port. The Type-C controller (`fusb301`) switched the port
+  to host by itself (role `host`; no forced role write needed).
+- Kernel: `usb 1-1: new full-speed … device number 12`, a disconnect 2 s
+  later, then `… number 13` (the ESP32 booting, since it's USB-powered).
+- ESP32 now at sysfs **`1-1`** = USB2 root port 1, **not under the hub**;
+  12M, `power/control=on`. `/dev/laksa_microros → ttyACM0` via the existing
+  udev rule (VID/PID/serial match), path `…/usb1/1-1/1-1:1.0/tty/ttyACM0`.
+- The agent needed a manual restart (the unit `Requires=` the device, so the
+  unplug stopped it). Done with the `-v6` drop-in re-installed: agent
+  active 18:16:12Z (PID 18918), session established 18:16:14Z.
+- LiDAR (hub 1-2.1) and ZED (hub 1-2.4 HID + 2-1.4 video) unchanged; hub
+  port 1-2.3 now empty.
+
+## Step 2: windows (15 min each, `-v6` on)
+| window | UTC | resets | stalls >1 s | `/laksa/state` Hz | CPU % | GPU % | hub-era comparison |
+|---|---|---|---|---|---|---|---|
+| W1 ESP32 only (control) | 18:18:24–18:33:24 | **0** | 0 | 9.54 | 1.9 | 0.0 | Part 2: 6 and 7 |
+| W3 ZED only (test) | 18:34:28–18:49:28 | **0** | 0 | 9.54 | 31.6 | 21.3 | Part 2: 12 |
+
+Pre-checks: W1 state 9.55 Hz, no /scan, no ZED; W3 state 9.65 Hz, ZED
+odom 43.6 Hz, no /scan. Agent PID 18918, `NRestarts=0` throughout; 0 resets
+in the settle periods too. 3,871 in-session pings, agent reply latency
+median 0.20 ms, p99 0.44 ms, max 2.01 ms (the host side is unchanged).
+Cross-check straight from the `-v6` log: **0 `delete_client`, exactly 1
+`establish_session` from 18:16:12Z to 18:51:53Z (35.7 min)**. Kernel since the
+move: only ZED events (HID reset at ZED start 18:33:28Z; ZED
+disconnect/re-enumerate at wrapper stop 18:49:29Z); none on 1-1.
+
+**Surprising in its own right (flagged as requested): the control window
+was 0, not the expected ~6–7.**
+
+## Second finding: the ESP32's own topics now arrive at full rate
+Measured right after the windows (`ros2 topic hz`, idle):
+| topic | on the hub (A5/A6/Part 2) | on USB-C | nominal |
+|---|---|---|---|
+| `/laksa/state` | 7.7–8.0 Hz | **9.77 Hz** | — |
+| `/laksa/vesc/state` | ~6.9–7.2 Hz | **9.29 Hz** | — |
+| `/laksa/imu/data` | 24–28 Hz | **40.4 Hz** | ~41 Hz (findings doc) |
+| `/laksa/imu/mag` | 10.6–10.9 Hz | **18.2 Hz** | — |
+The IMU shortfall noted in A5/A6 (attributed then to Orin load) was the hub
+path. On the hub, the ESP32→host direction was also throttled.
+
+## Interpretation
+- **The shared on-board hub is the aggravating factor, and more: on this
+  evidence it is the main trigger of the churn itself,** not just of the
+  ZED's extra resets. Off the hub, both idle and ZED-running went to 0 over
+  30 min (plus 5.7 min more of settle), and the ESP32's outbound topic rates
+  recovered to nominal. Hub-era idle was 2–9 per 15 min across 16 windows,
+  and ZED-only was 12, so two zeros are well outside that.
+- This fits Parts 1–2: the host replies in <1 ms, but the reply (host→ESP32)
+  and the ESP32's traffic (ESP32→host) were being delayed or starved on the
+  hub's full-speed path. The one-strike 100 ms ping turned that into
+  resets. The ZED's HID interface (on the same USB2 hub) and its USB3 traffic
+  (same hub chip) made it worse.
+- **Confound, stated plainly:** moving the cable power-cycled the ESP32, so
+  "off the hub" is also "freshly booted ESP32". Weak as an explanation
+  (after earlier boots tonight the churn started within minutes), but not
+  excluded. The clean confirmation is A/B/A: move back to a hub USB-A port
+  for one 15-min idle window (expect resets back and IMU ~25 Hz), then back
+  to USB-C. Needs the operator; not done.
+- n = 1 window per condition (plus the continuous 35.7 min with 0).
+
+## Where the ESP32 is now (don't lose track)
+**ESP32 on the Orin's USB-C port** (sysfs 1-1, USB2 root port 1, via the
+`fusb301` Type-C controller in host mode), **not** on the carrier's USB-A
+hub. Recommended to stay there. Follow-ups this creates:
+1. **Boot test:** A3's reboot test was done with the ESP32 on the hub. It
+   needs re-running with the ESP32 on USB-C (does the Type-C port come up in
+   host mode at boot with the ESP32 attached, and does the agent start?).
+2. **Hotplug gap (A3):** unplugging/replugging the ESP32 stops the agent
+   (and health) via `Requires=` and they don't come back by themselves.
+   Consider `WantedBy=dev-laksa_microros.device` (or a udev
+   `SYSTEMD_WANTS`) so a replug restarts the agent.
+3. **The USB-C port is also the flashing/recovery port.** The ESP32 must be
+   unplugged if the Orin ever needs flashing over USB-C.
+4. The firmware fix (ping tolerance) is still worth doing: zero-slack
+   liveness remains fragile to any future bus hiccup. But it's no longer
+   urgent if the USB-C placement holds.
+
+## State left behind
+- ESP32 on USB-C (keep). LiDAR and ZED on the hub (unchanged).
+- **`-v6` drop-in installed again** (for these windows). The operator should
+  revert: `sudo rm -r /etc/systemd/system/laksa-microros-agent.service.d && sudo systemctl daemon-reload && sudo systemctl restart laksa-microros-agent`
+- Nothing else running; ZED stopped at 18:49:40Z.
