@@ -19,7 +19,7 @@ either project doc and need to be captured from the actual Orin.
 | sllidar_ros2 | source, `github.com/Slamtec/sllidar_ros2` @ `34300099fadfc772965962dec837bf436706188f` (main, 2024-06-17; no release tags upstream), package 1.0.1, SLLIDAR SDK 2.1.0; built in `~/laksa_ws/src/sllidar_ros2` (sibling of this repo, not vendored in it). No apt package for Humble. | settled by evidence (A2, 2026-09-28) |
 | ZED SDK | **5.5.0** for JetPack 6.2.2 / L4T 36.5 (CUDA 12.6), `ZED_SDK_Tegra_L4T36.5_v5.5.0.zstd.run`, SHA-256 `3039e37d90c75fe846baf9358917c0a018dc8e86f660dd2a6e5986775a779fe1`; URL `https://download.stereolabs.com/zedsdk/5.5/l4t36.5/jetsons` (from stereolabs.com/developers/release, 2026-09-28); installed `-- silent skip_python` to `/usr/local/zed` | settled by evidence (A5) |
 | ZED 2i unit | S/N 38400764, camera FW 1523, sensors FW 778 | verified live (A5) |
-| zed-ros2-wrapper | TODO (A5 step 7, not started) | — |
+| zed-ros2-wrapper | tag `v5.5.0` = `431dcf4b1ea39caf894ca6ea294437437dbdb034` (2026-09-16), source build in `~/laksa_ws/src/zed-ros2-wrapper` (sibling, not vendored); `zed_msgs` from apt 5.3.0 (v5.5-only fields absent) | settled by evidence (A5); build pending |
 | rosdep / apt package versions for this workspace | TODO -- run `rosdep install --from-paths src --ignore-src -r -y` on the Orin and capture the resolved package versions here once colcon build succeeds |
 
 Firmware provenance (public repo `Project-LAKSA/project_laksa`, cloned
