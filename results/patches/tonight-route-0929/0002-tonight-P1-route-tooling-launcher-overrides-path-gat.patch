@@ -1,0 +1,1716 @@
+From 995ace9cadc7394d030ba5de4ee35e947c11fb6b Mon Sep 17 00:00:00 2001
+From: KarSha <12345678+karsha.noreply.github.com>
+Date: Tue, 29 Sep 2026 04:17:30 -0500
+Subject: [PATCH 2/2] tonight: P1 route tooling (launcher overrides, path gate,
+ bench/logging tools, console re-arm fix)
+
+P1.1  setup/dryrun_bringup.sh: LAKSA_NAV_ERPM, LAKSA_CRUISE_ERPM,
+      LAKSA_DRIVER_CAP, LAKSA_BT_XML, LAKSA_NAV_EXTRA, LAKSA_NAV_CMD_TOPIC
+      overrides. Unset, the generated commands are identical to before
+      (checked for start and trial). Set values are validated before
+      anything starts; effective values and the supervisor's arguments go
+      to session.txt.
+P1.2  laksa_learned_driver/config/nav2_tonight_overrides.yaml (FollowPath
+      speeds 0.22/0.21/0.21, collision detection, reversing allowed).
+P1.3  laksa_bringup/config/navigate_plan_once.xml: ComputePathToPose then
+      FollowPath, no replanning or recoveries.
+P1.4  setup/tonight/path_gate.py: fail-closed relay /laksa/nav_cmd_vel_raw ->
+      /laksa/nav_cmd_vel, only while the active goal's own plan passed the
+      footprint/unknown/grid/forward-only/curvature checks; FAIL latches,
+      cancels navigation. test_path_gate.py: 11 required cases + 6 more.
+P1.5  setup/tonight/restart_supervisor.sh (+ --dry-run).
+P1.6  setup/tonight/vesc_logger.py (record, --mark, analyze).
+P1.7  setup/tonight/start_reliability.sh (loops traction_bench.py).
+P1.10 console: after a heartbeat loss mid-hold, HOLD/GO are ignored until
+      released (hold_latch.py + test); the page says "release and press again".
+P1.11 setup/tonight/wait_spin.py.
+      setup/tonight/topic_publishers.py: publisher counts without the ros2 daemon cache.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../config/navigate_plan_once.xml             |  16 +
+ .../config/nav2_tonight_overrides.yaml        |  17 +
+ .../laksa_learned_driver/console_node.py      |  20 +-
+ .../laksa_learned_driver/console_page.html    |   4 +-
+ .../laksa_learned_driver/hold_latch.py        |  39 ++
+ .../test/test_hold_latch.py                   |  97 ++++
+ .../esp32-s3/jetson/setup/dryrun_bringup.sh   |  61 ++-
+ .../jetson/setup/tonight/path_gate.py         | 499 ++++++++++++++++++
+ .../setup/tonight/restart_supervisor.sh       |  99 ++++
+ .../jetson/setup/tonight/start_reliability.sh |  95 ++++
+ .../jetson/setup/tonight/test_path_gate.py    | 198 +++++++
+ .../jetson/setup/tonight/topic_publishers.py  |  40 ++
+ .../jetson/setup/tonight/vesc_logger.py       | 214 ++++++++
+ .../jetson/setup/tonight/wait_spin.py         |  81 +++
+ 14 files changed, 1472 insertions(+), 8 deletions(-)
+ create mode 100644 firmware/esp32-s3/jetson/laksa_bringup/config/navigate_plan_once.xml
+ create mode 100644 firmware/esp32-s3/jetson/laksa_learned_driver/config/nav2_tonight_overrides.yaml
+ create mode 100644 firmware/esp32-s3/jetson/laksa_learned_driver/laksa_learned_driver/hold_latch.py
+ create mode 100644 firmware/esp32-s3/jetson/laksa_learned_driver/test/test_hold_latch.py
+ create mode 100755 firmware/esp32-s3/jetson/setup/tonight/path_gate.py
+ create mode 100755 firmware/esp32-s3/jetson/setup/tonight/restart_supervisor.sh
+ create mode 100755 firmware/esp32-s3/jetson/setup/tonight/start_reliability.sh
+ create mode 100644 firmware/esp32-s3/jetson/setup/tonight/test_path_gate.py
+ create mode 100755 firmware/esp32-s3/jetson/setup/tonight/topic_publishers.py
+ create mode 100755 firmware/esp32-s3/jetson/setup/tonight/vesc_logger.py
+ create mode 100755 firmware/esp32-s3/jetson/setup/tonight/wait_spin.py
+
+diff --git a/firmware/esp32-s3/jetson/laksa_bringup/config/navigate_plan_once.xml b/firmware/esp32-s3/jetson/laksa_bringup/config/navigate_plan_once.xml
+new file mode 100644
+index 0000000..67f43ea
+--- /dev/null
++++ b/firmware/esp32-s3/jetson/laksa_bringup/config/navigate_plan_once.xml
+@@ -0,0 +1,16 @@
++<!--
++  Plan once, follow once (tonight, 2026-09-29; selected with LAKSA_BT_XML).
++  One ComputePathToPose, then FollowPath on that same path.  No replanning,
++  no recoveries, no BackUp: any failure ends navigation, so the path the car
++  drives is the one setup/tonight/path_gate.py checked.
++  Uses only nodes in nav2_ackermann.yaml's plugin_lib_names (Sequence is a
++  BehaviorTree.CPP built-in).
++-->
++<root main_tree_to_execute="MainTree">
++  <BehaviorTree ID="MainTree">
++    <Sequence name="PlanOnceAndFollow">
++      <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"/>
++      <FollowPath path="{path}" controller_id="FollowPath"/>
++    </Sequence>
++  </BehaviorTree>
++</root>
+diff --git a/firmware/esp32-s3/jetson/laksa_learned_driver/config/nav2_tonight_overrides.yaml b/firmware/esp32-s3/jetson/laksa_learned_driver/config/nav2_tonight_overrides.yaml
+new file mode 100644
+index 0000000..1b6f056
+--- /dev/null
++++ b/firmware/esp32-s3/jetson/laksa_learned_driver/config/nav2_tonight_overrides.yaml
+@@ -0,0 +1,17 @@
++# Tonight's (2026-09-29) route-following overrides for controller_server only,
++# loaded after nav2_field_overrides.yaml through LAKSA_NAV_EXTRA in
++# setup/dryrun_bringup.sh.
++#
++# Speeds come from P3 (start-reliability bench, setup/tonight/start_reliability.sh):
++# never set any of them below the measured reliable-start speed, because
++# sensorless starts below it stall (0.10 m/s stalls, bench 2026-09-28).
++# The supervisor's navigation_max_erpm (LAKSA_NAV_ERPM) must allow 0.22 m/s,
++# about 911 eRPM, or it will cap these speeds.
++controller_server:
++  ros__parameters:
++    FollowPath:
++      desired_linear_vel: 0.22
++      regulated_linear_scaling_min_speed: 0.21
++      min_approach_linear_velocity: 0.21
++      use_collision_detection: true
++      allow_reversing: true
+diff --git a/firmware/esp32-s3/jetson/laksa_learned_driver/laksa_learned_driver/console_node.py b/firmware/esp32-s3/jetson/laksa_learned_driver/laksa_learned_driver/console_node.py
+index ae19859..89df92c 100644
+--- a/firmware/esp32-s3/jetson/laksa_learned_driver/laksa_learned_driver/console_node.py
++++ b/firmware/esp32-s3/jetson/laksa_learned_driver/laksa_learned_driver/console_node.py
+@@ -47,6 +47,7 @@ from nav2_msgs.action import ComputePathToPose, NavigateToPose
+ from std_msgs.msg import Bool, Empty, String
+ from tf2_ros import Buffer, TransformException, TransformListener
+ 
++from .hold_latch import HoldLatch
+ from .scan_adapter import LidarMount, scan_to_vehicle_beams
+ 
+ PAGE = Path(__file__).with_name("console_page.html")
+@@ -108,6 +109,8 @@ class Console(Node):
+         self._goal = None
+         self._last_heartbeat = 0.0
+         self._hold_started = 0.0
++        self._hold_latch = HoldLatch()    # heartbeat lost mid-hold -> release and press again
++        self._ignored_press_logged = False
+         self._pulse = None
+         # Route state: planning and navigation run on the ROS thread (_route_tick);
+         # the web thread only sets these requests.
+@@ -259,6 +262,10 @@ class Console(Node):
+             pulse = self._pulse if self._pulse and now < self._pulse[1] else None
+             alive = now - self._last_heartbeat <= self._timeout
+             engaging = alive and now - self._hold_started < self._engage
++            lost = self._hold_latch.lapse(now, self._last_heartbeat, self._timeout)
++        if lost:
++            self.get_logger().warn("Heartbeat lost while HOLD/GO was held: ignoring HOLD/GO until it is "
++                                   "released and pressed again")
+         if pulse:
+             self._joy((pulse[0],))
+         elif alive:
+@@ -408,6 +415,7 @@ class Console(Node):
+                 "type": "state",
+                 "status": dict(self._status),
+                 "holding": time.monotonic() - self._last_heartbeat <= self._timeout,
++                "rearm_needed": self._hold_latch.awaiting_release,
+                 "pose": self._pose,
+                 "trail": self._trail[-600:],
+                 "lidar": self._lidar_xy,
+@@ -466,8 +474,13 @@ class Console(Node):
+                         continue
+                     now = time.monotonic()
+                     kind = data.get("cmd")
++                    ignored = False
+                     with self._lock:
+-                        if kind in ("hold", "go"):
++                        if kind in ("hold", "go") and not self._hold_latch.press(
++                                now, self._last_heartbeat, self._timeout):
++                            ignored = not self._ignored_press_logged
++                            self._ignored_press_logged = True
++                        elif kind in ("hold", "go"):
+                             if now - self._last_heartbeat > self._timeout:
+                                 self._hold_started = now
+                                 self._nav_hold = kind == "go"
+@@ -478,13 +491,18 @@ class Console(Node):
+                         elif kind == "release":
+                             self._last_heartbeat = 0.0
+                             self._go_latched = False
++                            self._hold_latch.release()
++                            self._ignored_press_logged = False
+                         elif kind == "stop":
+                             self._last_heartbeat = 0.0
++                            self._hold_latch.stop()
+                             self._pulse = (B_BUTTON, now + 0.6)
+                         elif kind == "rearm":
+                             self._pulse = (Y_BUTTON, now + 0.6)
+                         elif kind == "plan":
+                             self._plan_requested = True
++                    if ignored:
++                        self.get_logger().warn(f"Ignoring '{kind}' after heartbeat loss: release and press again")
+                     if kind in ("start", "goal"):
+                         x, y = float(data["x"]), float(data["y"])
+                         if math.isfinite(x) and math.isfinite(y):
+diff --git a/firmware/esp32-s3/jetson/laksa_learned_driver/laksa_learned_driver/console_page.html b/firmware/esp32-s3/jetson/laksa_learned_driver/laksa_learned_driver/console_page.html
+index 096b0c7..2caec30 100644
+--- a/firmware/esp32-s3/jetson/laksa_learned_driver/laksa_learned_driver/console_page.html
++++ b/firmware/esp32-s3/jetson/laksa_learned_driver/laksa_learned_driver/console_page.html
+@@ -243,7 +243,9 @@ function updateStatus() {
+   cls($('routeinfo'), r.state === 'FAILED' ? 'bad' : (r.state === 'ARRIVED' || r.state === 'PLANNED' ? 'ok' : ''));
+   $('health').textContent = s.health; cls($('health'), s.health === 'READY' ? 'ok' : 'warn');
+   $('estop').textContent = s.estop === null ? '–' : (s.estop ? 'LATCHED ' + (s.estop_reason || '') : 'clear'); cls($('estop'), s.estop ? 'bad' : 'ok');
+-  $('driver').textContent = s.driver + (state.holding ? ' · holding' : '');
++  $('driver').textContent = s.driver + (state.holding ? ' · holding' : '')
++    + (state.rearm_needed ? ' · connection lost: release and press again' : '');
++  cls($('driver'), state.rearm_needed ? 'bad' : '');
+   $('speed').textContent = s.speed_mps === null ? '–' : s.speed_mps.toFixed(2) + ' m/s';
+   $('battery').textContent = s.battery_v === null ? '–' : s.battery_v.toFixed(1) + ' V' + (s.vesc_fault ? ' · VESC fault ' + s.vesc_fault : '');
+   const p = s.person || {};
+diff --git a/firmware/esp32-s3/jetson/laksa_learned_driver/laksa_learned_driver/hold_latch.py b/firmware/esp32-s3/jetson/laksa_learned_driver/laksa_learned_driver/hold_latch.py
+new file mode 100644
+index 0000000..aa9a6d5
+--- /dev/null
++++ b/firmware/esp32-s3/jetson/laksa_learned_driver/laksa_learned_driver/hold_latch.py
+@@ -0,0 +1,39 @@
++"""Deadman re-arm rule for the console's HOLD / GO buttons.
++
++The page sends "hold" (or "go") every 50 ms while a button is held and
++"release" when it is let go.  If the heartbeat lapses while a button is held
++(Wi-Fi drop, tunnel stall, browser throttled) the car brakes, and the button
++must be released and pressed again before it counts: a hold that simply
++resumes after the gap is ignored.  A deliberate release, STOP and REARM work
++as before.
++"""
++
++
++class HoldLatch:
++    def __init__(self) -> None:
++        self.holding = False            # a hold/go stream is in progress (no release yet)
++        self.awaiting_release = False   # heartbeat was lost mid-hold: ignore presses until "release"
++
++    def lapse(self, now: float, last_heartbeat: float, timeout: float) -> bool:
++        """Call periodically.  Returns True when a mid-hold heartbeat loss is first detected."""
++        if self.holding and now - last_heartbeat > timeout:
++            self.holding = False
++            self.awaiting_release = True
++            return True
++        return False
++
++    def press(self, now: float, last_heartbeat: float, timeout: float) -> bool:
++        """A "hold"/"go" message.  Returns True if it counts, False if it must be ignored."""
++        self.lapse(now, last_heartbeat, timeout)
++        if self.awaiting_release:
++            return False
++        self.holding = True
++        return True
++
++    def release(self) -> None:
++        self.holding = False
++        self.awaiting_release = False
++
++    def stop(self) -> None:
++        """STOP ends the hold deliberately; it is not a heartbeat loss."""
++        self.holding = False
+diff --git a/firmware/esp32-s3/jetson/laksa_learned_driver/test/test_hold_latch.py b/firmware/esp32-s3/jetson/laksa_learned_driver/test/test_hold_latch.py
+new file mode 100644
+index 0000000..c350d28
+--- /dev/null
++++ b/firmware/esp32-s3/jetson/laksa_learned_driver/test/test_hold_latch.py
+@@ -0,0 +1,97 @@
++import unittest
++
++from laksa_learned_driver.hold_latch import HoldLatch
++
++TIMEOUT = 0.3
++
++
++class Page:
++    """Drives HoldLatch the way console_node does, tracking the heartbeat."""
++
++    def __init__(self) -> None:
++        self.latch = HoldLatch()
++        self.last_heartbeat = 0.0
++
++    def press(self, now: float) -> bool:
++        accepted = self.latch.press(now, self.last_heartbeat, TIMEOUT)
++        if accepted:
++            self.last_heartbeat = now
++        return accepted
++
++    def release(self) -> None:
++        self.latch.release()
++        self.last_heartbeat = 0.0
++
++    def stop(self) -> None:
++        self.latch.stop()
++        self.last_heartbeat = 0.0
++
++    def tick(self, now: float) -> bool:
++        return self.latch.lapse(now, self.last_heartbeat, TIMEOUT)
++
++
++class HoldLatchTest(unittest.TestCase):
++    def test_continuous_hold_is_accepted(self):
++        page = Page()
++        for i in range(20):
++            self.assertTrue(page.press(10.0 + 0.05 * i))
++        self.assertFalse(page.latch.awaiting_release)
++
++    def test_hold_resuming_after_heartbeat_gap_is_ignored_until_release(self):
++        page = Page()
++        self.assertTrue(page.press(10.0))
++        self.assertTrue(page.press(10.05))
++        # Wi-Fi drop: next heartbeat 1 s later while the button is still held.
++        self.assertFalse(page.press(11.05))
++        self.assertFalse(page.press(11.10))
++        self.assertTrue(page.latch.awaiting_release)
++        page.release()
++        self.assertTrue(page.press(12.0))
++        self.assertFalse(page.latch.awaiting_release)
++
++    def test_timer_detects_the_loss_before_the_next_press(self):
++        page = Page()
++        page.press(10.0)
++        self.assertFalse(page.tick(10.2))
++        self.assertTrue(page.tick(10.4))          # detected once
++        self.assertFalse(page.tick(10.5))
++        self.assertFalse(page.press(10.6))
++
++    def test_go_is_treated_like_hold(self):
++        page = Page()
++        page.press(10.0)                          # "go" uses the same latch
++        self.assertFalse(page.press(20.0))
++        page.release()
++        self.assertTrue(page.press(21.0))
++
++    def test_deliberate_release_then_press_is_unchanged(self):
++        page = Page()
++        page.press(10.0)
++        page.release()
++        self.assertTrue(page.press(10.1))
++        self.assertTrue(page.press(10.15))
++
++    def test_stop_then_press_is_unchanged(self):
++        page = Page()
++        page.press(10.0)
++        page.stop()
++        self.assertFalse(page.tick(15.0))
++        self.assertTrue(page.press(15.0))
++
++    def test_socket_close_mid_hold_needs_release(self):
++        page = Page()
++        page.press(10.0)
++        page.last_heartbeat = 0.0                 # console_node zeroes the heartbeat when a socket closes
++        self.assertTrue(page.tick(10.05))
++        self.assertFalse(page.press(10.1))
++        page.release()
++        self.assertTrue(page.press(10.2))
++
++    def test_first_press_after_idle_is_accepted(self):
++        page = Page()
++        self.assertFalse(page.tick(100.0))
++        self.assertTrue(page.press(100.0))
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/firmware/esp32-s3/jetson/setup/dryrun_bringup.sh b/firmware/esp32-s3/jetson/setup/dryrun_bringup.sh
+index ba481dc..d09a014 100755
+--- a/firmware/esp32-s3/jetson/setup/dryrun_bringup.sh
++++ b/firmware/esp32-s3/jetson/setup/dryrun_bringup.sh
+@@ -11,6 +11,15 @@
+ #   dryrun_bringup.sh trial    everything, actuation ENABLED, cruise ~0.15 m/s
+ #   dryrun_bringup.sh console  restart only the console (host follows network)
+ #   dryrun_bringup.sh stop | status
++#
++# Optional overrides for start|trial (unset = the behaviour described above):
++#   LAKSA_NAV_ERPM       supervisor navigation_max_erpm (default: drive_supervisor.yaml)
++#   LAKSA_CRUISE_ERPM    supervisor exploration_max_erpm (default: per mode)
++#   LAKSA_DRIVER_CAP     learned driver speed_cap_mps (default: per mode)
++#   LAKSA_BT_XML         NavigateToPose behaviour tree (default: navigate_ackermann.xml)
++#   LAKSA_NAV_EXTRA      extra --params-file for controller_server, after the field overrides
++#   LAKSA_NAV_CMD_TOPIC  cmd_vel remap for controller_server and behavior_server
++#                        (default /laksa/nav_cmd_vel, the supervisor's navigation input)
+ set -uo pipefail
+ 
+ RUN_DIR="${HOME}/laksa_run"
+@@ -98,9 +107,42 @@ ACTUATION=false
+ CRUISE_ERPM=1000.0
+ DRIVER_CAP=0.24
+ if [[ "${MODE}" == "trial" ]]; then ACTUATION=true; CRUISE_ERPM=620.0; DRIVER_CAP=0.15; fi
++CRUISE_ERPM="${LAKSA_CRUISE_ERPM:-${CRUISE_ERPM}}"
++DRIVER_CAP="${LAKSA_DRIVER_CAP:-${DRIVER_CAP}}"
++NAV_ERPM="${LAKSA_NAV_ERPM:-}"
++BT_XML="${LAKSA_BT_XML:-${BT_XML}}"
++NAV_EXTRA="${LAKSA_NAV_EXTRA:-}"
++NAV_CMD_TOPIC="${LAKSA_NAV_CMD_TOPIC:-/laksa/nav_cmd_vel}"
++
++check_overrides() {
++    # Only overrides that are set are checked, so the defaults behave as before.
++    local name value
++    for name in LAKSA_CRUISE_ERPM LAKSA_DRIVER_CAP LAKSA_NAV_ERPM; do
++        value="${!name:-}"
++        if [[ -n "${value}" && ! "${value}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
++            echo "refusing to start: ${name}='${value}' is not a non-negative number" >&2; exit 64
++        fi
++    done
++    for name in LAKSA_BT_XML LAKSA_NAV_EXTRA; do
++        value="${!name:-}"
++        if [[ -n "${value}" && ! -f "${value}" ]]; then
++            echo "refusing to start: ${name} file '${value}' does not exist" >&2; exit 64
++        fi
++    done
++    value="${LAKSA_NAV_CMD_TOPIC:-}"
++    if [[ -n "${value}" && ! "${value}" =~ ^/[A-Za-z0-9_/]+$ ]]; then
++        echo "refusing to start: LAKSA_NAV_CMD_TOPIC='${value}' is not an absolute topic name" >&2; exit 64
++    fi
++}
+ 
+ case "${MODE}" in
+ start|trial)
++    check_overrides
++    SUPERVISOR_ARGS=(--params-file "${SUPERVISOR_CONFIG}" -p actuation_enabled:=${ACTUATION} -p autonomy_enabled:=true
++        -p exploration_max_erpm:=${CRUISE_ERPM})
++    [[ -n "${NAV_ERPM}" ]] && SUPERVISOR_ARGS+=(-p navigation_max_erpm:=${NAV_ERPM})
++    NAV_EXTRA_ARGS=()
++    [[ -n "${NAV_EXTRA}" ]] && NAV_EXTRA_ARGS=(--params-file "${NAV_EXTRA}")
+     mkdir -p "${RUN_DIR}"
+     SESSION="${SESSIONS_DIR}/$(date +%Y%m%dT%H%M%S)"
+     mkdir -p "${SESSION}"
+@@ -125,9 +167,7 @@ start|trial)
+         start_one ekf ros2 run robot_localization ekf_node --ros-args --params-file "${EKF_CONFIG}" \
+             -r odometry/filtered:=/laksa/odometry/fused
+     fi
+-    start_one supervisor ros2 run laksa_bringup drive_supervisor_node.py --ros-args \
+-        --params-file "${SUPERVISOR_CONFIG}" -p actuation_enabled:=${ACTUATION} -p autonomy_enabled:=true \
+-        -p exploration_max_erpm:=${CRUISE_ERPM}
++    start_one supervisor ros2 run laksa_bringup drive_supervisor_node.py --ros-args "${SUPERVISOR_ARGS[@]}"
+     start_one learned_driver ros2 run laksa_learned_driver learned_driver_node --ros-args \
+         --params-file "${DRIVER_CONFIG}" -p speed_cap_mps:=${DRIVER_CAP} -p decision_log:="${SESSION}/decisions.csv"
+     if [[ -f "${HOME}/zed_ws/install/setup.bash" ]]; then
+@@ -144,11 +184,12 @@ start|trial)
+             # Controller and BackUp output go to the supervisor's navigation
+             # input, never to the ESP32: the supervisor gates and caps them.
+             start_one nav_controller ros2 run nav2_controller controller_server --ros-args \
+-                --params-file "${NAV_CONFIG}" --params-file "${NAV_OVERRIDES}" -r cmd_vel:=/laksa/nav_cmd_vel
++                --params-file "${NAV_CONFIG}" --params-file "${NAV_OVERRIDES}" "${NAV_EXTRA_ARGS[@]}" \
++                -r cmd_vel:="${NAV_CMD_TOPIC}"
+             start_one nav_planner ros2 run nav2_planner planner_server --ros-args \
+                 --params-file "${NAV_CONFIG}" --params-file "${NAV_OVERRIDES}"
+             start_one nav_behavior ros2 run nav2_behaviors behavior_server --ros-args \
+-                --params-file "${NAV_CONFIG}" -r cmd_vel:=/laksa/nav_cmd_vel
++                --params-file "${NAV_CONFIG}" -r cmd_vel:="${NAV_CMD_TOPIC}"
+             start_one nav_bt ros2 run nav2_bt_navigator bt_navigator --ros-args --params-file "${NAV_CONFIG}" \
+                 -p default_nav_to_pose_bt_xml:="${BT_XML}" -p default_nav_through_poses_bt_xml:="${BT_THROUGH_XML}"
+             start_one nav_lifecycle ros2 run nav2_lifecycle_manager lifecycle_manager --ros-args \
+@@ -157,7 +198,15 @@ start|trial)
+     fi
+     start_one recorder ros2 bag record -o "${SESSION}/bag" "${BAG_TOPICS[@]}"
+     start_console
+-    echo "mode=${MODE} actuation=${ACTUATION} cruise_erpm=${CRUISE_ERPM} driver_cap=${DRIVER_CAP} started=$(date -Is)" > "${SESSION}/session.txt"
++    {
++        echo "mode=${MODE} actuation=${ACTUATION} cruise_erpm=${CRUISE_ERPM} driver_cap=${DRIVER_CAP} started=$(date -Is)"
++        echo "nav_erpm=${NAV_ERPM:-yaml}"
++        echo "bt_xml=${BT_XML}"
++        echo "nav_extra=${NAV_EXTRA:-none}"
++        echo "nav_cmd_topic=${NAV_CMD_TOPIC}"
++        # Read back by setup/tonight/restart_supervisor.sh.
++        echo "supervisor_args=$(printf '%q ' "${SUPERVISOR_ARGS[@]}")"
++    } > "${SESSION}/session.txt"
+     echo "mode ${MODE}: supervisor actuation_enabled=${ACTUATION}, cruise cap ${CRUISE_ERPM} eRPM, driver cap ${DRIVER_CAP} m/s"
+     ;;
+ console)
+diff --git a/firmware/esp32-s3/jetson/setup/tonight/path_gate.py b/firmware/esp32-s3/jetson/setup/tonight/path_gate.py
+new file mode 100755
+index 0000000..522b9dc
+--- /dev/null
++++ b/firmware/esp32-s3/jetson/setup/tonight/path_gate.py
+@@ -0,0 +1,499 @@
++#!/usr/bin/env python3
++"""Fail-closed gate between Nav2's velocity output and drive_supervisor.
++
++Nav2's controller_server and behavior_server publish to /laksa/nav_cmd_vel_raw
++(LAKSA_NAV_CMD_TOPIC in setup/dryrun_bringup.sh).  This node republishes those
++Twists on /laksa/nav_cmd_vel, the supervisor's navigation input, only while the
++active NavigateToPose goal has a PASS verdict for its own path.  Otherwise it
++publishes nothing: the supervisor sees stale navigation input and commands zero
++after nav_timeout_sec (0.25 s).
++
++Verdict per goal (from /navigate_to_pose/_action/status):
++  * A new goal starts at NONE.  Only a /plan whose header.stamp is later than
++    the goal's goal_info.stamp is evaluated for it.
++  * The plan passes only if all checks pass: /plan and the global costmap are
++    in the map frame and the costmap is under 3 s old; the padded footprint at
++    every pose (resampled at <= 0.05 m) covers no cell >= 99, no unknown cell
++    and nothing outside the grid; no cusp or reverse segment (forward_only);
++    curvature never above 0.914 * 1.10 1/m.
++  * While forwarding, a Twist with linear.x < 0 (or non-finite) fails the goal.
++  * FAIL latches for the rest of that goal: the gate publishes Empty on
++    /laksa/cancel_navigation and cancels every /navigate_to_pose goal.
++
++Every verdict is published as JSON on /laksa/path_gate and appended to
++~/laksa_run/latest/path_gate.log.
++
++The geometry (check_plan and helpers) and the verdict state machine
++(GateState) do not import ROS, so setup/tonight/test_path_gate.py tests them
++directly.
++"""
++
++from __future__ import annotations
++
++import json
++import math
++import os
++import sys
++import time
++from dataclasses import dataclass, field
++
++import numpy as np
++
++# Footprint of nav2_ackermann.yaml plus its 0.02 m footprint_padding (base_footprint frame).
++FOOTPRINT_X = (-0.17, 0.44)
++FOOTPRINT_Y = (-0.20, 0.20)
++# Smac minimum_turning_radius 1.09 m -> 0.914 1/m, with 10 % margin for the smoother.
++MAX_CURVATURE = 0.914 * 1.10
++RESAMPLE_M = 0.05
++CURVATURE_WINDOW_M = 0.20       # chord on each side of a point for the curvature estimate
++COSTMAP_MAX_AGE_S = 3.0
++BLOCKED_COST = 99               # OccupancyGrid scale: 99 inscribed, 100 lethal, -1 unknown
++LETHAL_COST = 100
++CLEARANCE_SEARCH_M = 1.0
++
++NONE, PASS, FAIL = "NONE", "PASS", "FAIL"
++# action_msgs/GoalStatus
++STATUS_ACCEPTED, STATUS_EXECUTING, STATUS_CANCELING = 1, 2, 3
++
++
++# ------------------------------------------------------------------ geometry
++@dataclass
++class Grid:
++    """An OccupancyGrid in plain numbers.  data[row, col], row = y index."""
++    data: np.ndarray
++    resolution: float
++    origin_x: float
++    origin_y: float
++    frame: str
++    received: float                 # time.monotonic() when it arrived
++    origin_yaw: float = 0.0
++
++
++@dataclass
++class PlanCheck:
++    ok: bool
++    reasons: list = field(default_factory=list)
++    length_m: float = 0.0
++    min_clearance_m: float | None = None
++    poses_checked: int = 0
++    cells_checked: int = 0
++    cells_blocked: int = 0
++    cells_unknown: int = 0
++    cells_outside: int = 0          # footprint sample points that fall outside the grid
++    max_curvature: float = 0.0
++    reverse_segments: int = 0
++    cusps: int = 0
++
++    def as_dict(self) -> dict:
++        return {"ok": self.ok, "reasons": list(self.reasons), "length_m": round(self.length_m, 3),
++                "min_clearance_m": None if self.min_clearance_m is None else round(self.min_clearance_m, 3),
++                "poses_checked": self.poses_checked,
++                "cells": {"checked": self.cells_checked, "blocked": self.cells_blocked,
++                          "unknown": self.cells_unknown, "outside_samples": self.cells_outside},
++                "max_curvature": round(self.max_curvature, 3),
++                "reverse_segments": self.reverse_segments, "cusps": self.cusps}
++
++
++def _wrap(angle):
++    return (angle + np.pi) % (2.0 * np.pi) - np.pi
++
++
++def resample(poses: np.ndarray, step: float = RESAMPLE_M) -> np.ndarray:
++    """Insert poses so consecutive poses are at most `step` apart.
++
++    poses: N x 3 (x, y, yaw).  Every original pose is kept (cusps stay exact);
++    yaw is interpolated along the shortest angle.
++    """
++    if len(poses) < 2:
++        return poses.copy()
++    out = [poses[:1]]
++    for a, b in zip(poses[:-1], poses[1:]):
++        n = max(1, int(math.ceil(math.hypot(b[0] - a[0], b[1] - a[1]) / step)))
++        t = np.arange(1, n + 1)[:, None] / n
++        xy = a[:2] + t * (b[:2] - a[:2])
++        yaw = a[2] + t[:, 0] * _wrap(b[2] - a[2])
++        out.append(np.column_stack([xy, _wrap(yaw)]))
++    return np.vstack(out)
++
++
++def segment_directions(poses: np.ndarray) -> np.ndarray:
++    """+1 forward / -1 reverse / 0 no motion per segment, from the pose heading."""
++    d = np.diff(poses[:, :2], axis=0)
++    heading = np.column_stack([np.cos(poses[:-1, 2]), np.sin(poses[:-1, 2])])
++    dot = np.einsum("ij,ij->i", d, heading)
++    length = np.hypot(d[:, 0], d[:, 1])
++    out = np.sign(dot)
++    out[length < 1e-6] = 0
++    return out
++
++
++def count_cusps(poses: np.ndarray) -> int:
++    """Travel direction reversals (consecutive displacements more than 90 deg apart)."""
++    d = np.diff(poses[:, :2], axis=0)
++    d = d[np.hypot(d[:, 0], d[:, 1]) > 1e-6]
++    if len(d) < 2:
++        return 0
++    return int(np.sum(np.einsum("ij,ij->i", d[:-1], d[1:]) < 0.0))
++
++
++def curvature_profile(poses: np.ndarray, window_m: float = CURVATURE_WINDOW_M) -> np.ndarray:
++    """Menger curvature through points about window_m before and after each point.
++
++    Triples that straddle a cusp (travel direction reversal) are skipped: that
++    is a direction change, not a turn, and the forward-only check owns it.
++    """
++    xy = poses[:, :2]
++    if len(xy) < 3:
++        return np.zeros(0)
++    seg = np.hypot(*np.diff(xy, axis=0).T)
++    s = np.concatenate([[0.0], np.cumsum(seg)])
++    d = np.diff(xy, axis=0)
++    turn_back = np.concatenate([[False], np.einsum("ij,ij->i", d[:-1], d[1:]) < 0.0, [False]])
++    cusp_index = np.cumsum(turn_back)          # cusps passed up to each point
++    lo = np.searchsorted(s, s - window_m, side="right") - 1
++    hi = np.searchsorted(s, s + window_m, side="left")
++    out = []
++    for i in range(len(xy)):
++        a, b = lo[i], hi[i]
++        if a < 0 or b >= len(xy) or a == i or b == i:
++            continue
++        if cusp_index[b] != cusp_index[a] or turn_back[i]:
++            continue
++        p, q, r = xy[a], xy[i], xy[b]
++        ab, bc, ca = math.dist(p, q), math.dist(q, r), math.dist(r, p)
++        area2 = abs((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]))
++        denom = ab * bc * ca
++        if denom > 1e-12:
++            out.append(2.0 * area2 / denom)
++    return np.asarray(out)
++
++
++def _footprint_samples(resolution: float) -> np.ndarray:
++    """Points covering the padded footprint rectangle, spaced at most half a cell."""
++    step = resolution / 2.0
++    xs = np.linspace(FOOTPRINT_X[0], FOOTPRINT_X[1],
++                     int(math.ceil((FOOTPRINT_X[1] - FOOTPRINT_X[0]) / step)) + 1)
++    ys = np.linspace(FOOTPRINT_Y[0], FOOTPRINT_Y[1],
++                     int(math.ceil((FOOTPRINT_Y[1] - FOOTPRINT_Y[0]) / step)) + 1)
++    gx, gy = np.meshgrid(xs, ys)
++    return np.column_stack([gx.ravel(), gy.ravel()])
++
++
++def footprint_cells(grid: Grid, poses: np.ndarray):
++    """Cells under the padded footprint at every pose.
++
++    Returns (unique (row, col) inside the grid, number of footprint samples
++    outside the grid).
++    """
++    local = _footprint_samples(grid.resolution)
++    c, s = np.cos(poses[:, 2])[:, None], np.sin(poses[:, 2])[:, None]
++    wx = poses[:, 0:1] + c * local[:, 0] - s * local[:, 1]
++    wy = poses[:, 1:2] + s * local[:, 0] + c * local[:, 1]
++    col = np.floor((wx.ravel() - grid.origin_x) / grid.resolution).astype(np.int64)
++    row = np.floor((wy.ravel() - grid.origin_y) / grid.resolution).astype(np.int64)
++    h, w = grid.data.shape
++    inside = (col >= 0) & (col < w) & (row >= 0) & (row < h)
++    cells = np.unique(np.column_stack([row[inside], col[inside]]), axis=0)
++    return cells, int(np.sum(~inside))
++
++
++def min_clearance(grid: Grid, poses: np.ndarray) -> float | None:
++    """Smallest distance from the padded footprint to a lethal cell centre, or
++    None if no lethal cell is within CLEARANCE_SEARCH_M of the path."""
++    rows, cols = np.nonzero(grid.data >= LETHAL_COST)
++    if len(rows) == 0:
++        return None
++    ox = grid.origin_x + (cols + 0.5) * grid.resolution
++    oy = grid.origin_y + (rows + 0.5) * grid.resolution
++    reach = CLEARANCE_SEARCH_M + math.hypot(max(abs(v) for v in FOOTPRINT_X), max(abs(v) for v in FOOTPRINT_Y))
++    box = ((ox > poses[:, 0].min() - reach) & (ox < poses[:, 0].max() + reach)
++           & (oy > poses[:, 1].min() - reach) & (oy < poses[:, 1].max() + reach))
++    ox, oy = ox[box], oy[box]
++    best = None
++    for x, y, yaw in poses:
++        near = (np.abs(ox - x) < reach) & (np.abs(oy - y) < reach)
++        if not np.any(near):
++            continue
++        dx, dy = ox[near] - x, oy[near] - y
++        c, s = math.cos(yaw), math.sin(yaw)
++        lx, ly = c * dx + s * dy, -s * dx + c * dy
++        ex = np.maximum.reduce([FOOTPRINT_X[0] - lx, np.zeros_like(lx), lx - FOOTPRINT_X[1]])
++        ey = np.maximum.reduce([FOOTPRINT_Y[0] - ly, np.zeros_like(ly), ly - FOOTPRINT_Y[1]])
++        d = float(np.min(np.hypot(ex, ey)))
++        best = d if best is None else min(best, d)
++    if best is not None and best > CLEARANCE_SEARCH_M:
++        return None
++    return best
++
++
++def check_plan(poses, plan_frame: str, grid: Grid | None, now: float,
++               forward_only: bool = True, max_curvature: float = MAX_CURVATURE) -> PlanCheck:
++    """Every check on one plan.  poses: sequence of (x, y, yaw) in plan_frame."""
++    result = PlanCheck(ok=False)
++    reasons = result.reasons
++    poses = np.asarray(poses, dtype=float).reshape(-1, 3)
++    if len(poses) < 2:
++        reasons.append("empty path" if len(poses) == 0 else "path has a single pose")
++        return result
++    if not np.all(np.isfinite(poses)):
++        reasons.append("path has non-finite values")
++        return result
++    if plan_frame != "map":
++        reasons.append(f"plan frame is '{plan_frame}', not 'map'")
++    if grid is None:
++        reasons.append("no global costmap received")
++    else:
++        if grid.frame != "map":
++            reasons.append(f"costmap frame is '{grid.frame}', not 'map'")
++        age = now - grid.received
++        if age > COSTMAP_MAX_AGE_S:
++            reasons.append(f"costmap is {age:.1f} s old (limit {COSTMAP_MAX_AGE_S:.0f} s)")
++        if abs(grid.origin_yaw) > 1e-6:
++            reasons.append("rotated costmap origin is not supported")
++
++    result.length_m = float(np.sum(np.hypot(*np.diff(poses[:, :2], axis=0).T)))
++    dense = resample(poses)
++    result.poses_checked = len(dense)
++
++    if grid is not None and abs(grid.origin_yaw) <= 1e-6:
++        cells, outside = footprint_cells(grid, dense)
++        values = grid.data[cells[:, 0], cells[:, 1]] if len(cells) else np.zeros(0)
++        result.cells_checked = int(len(cells))
++        result.cells_outside = outside
++        result.cells_blocked = int(np.sum(values >= BLOCKED_COST))
++        result.cells_unknown = int(np.sum(values < 0))
++        if result.cells_blocked:
++            reasons.append(f"footprint touches {result.cells_blocked} cells with cost >= {BLOCKED_COST}")
++        if result.cells_unknown:
++            reasons.append(f"footprint touches {result.cells_unknown} unknown cells")
++        if outside:
++            reasons.append("footprint leaves the costmap")
++        result.min_clearance_m = min_clearance(grid, dense)
++
++    directions = segment_directions(dense)
++    result.reverse_segments = int(np.sum(directions < 0))
++    result.cusps = count_cusps(dense)
++    if forward_only and (result.reverse_segments or result.cusps):
++        reasons.append(f"not forward-only ({result.cusps} cusps, {result.reverse_segments} reverse segments)")
++
++    curvature = curvature_profile(dense)
++    result.max_curvature = float(np.max(curvature)) if len(curvature) else 0.0
++    if result.max_curvature > max_curvature:
++        reasons.append(f"curvature {result.max_curvature:.3f} 1/m above {max_curvature:.3f} "
++                       f"(radius {1.0 / result.max_curvature:.2f} m)")
++
++    result.ok = not reasons
++    return result
++
++
++# ------------------------------------------------------------------ decisions
++class GateState:
++    """Verdict for the active NavigateToPose goal.  No ROS, no clocks of its own."""
++
++    def __init__(self) -> None:
++        self.goal_key = None
++        self.goal_stamp = None
++        self.goal_status = None
++        self.verdict = NONE
++        self.reasons: list = []
++        self.plan_stamp = None
++        self.plan_report: dict = {}
++
++    def on_status(self, goals) -> bool:
++        """goals: iterable of (key, stamp_sec, status).  Returns True when the active goal changed.
++
++        The active goal is the newest one that is accepted, executing or
++        canceling.  A different goal (or none) resets the verdict to NONE.
++        """
++        live = [g for g in goals if g[2] in (STATUS_ACCEPTED, STATUS_EXECUTING, STATUS_CANCELING)]
++        newest = max(live, key=lambda g: g[1]) if live else None
++        key = newest[0] if newest else None
++        self.goal_status = newest[2] if newest else None
++        if key == self.goal_key:
++            return False
++        self.goal_key = key
++        self.goal_stamp = newest[1] if newest else None
++        self.verdict, self.reasons, self.plan_stamp, self.plan_report = NONE, [], None, {}
++        return True
++
++    def on_plan(self, plan_stamp: float, check: PlanCheck) -> str:
++        """Returns 'ignored', 'pass' or 'fail' ('fail' only on the transition into FAIL)."""
++        if self.goal_key is None or plan_stamp <= self.goal_stamp:
++            return "ignored"
++        if self.verdict == FAIL:
++            return "ignored"
++        self.plan_stamp = plan_stamp
++        self.plan_report = check.as_dict()
++        if check.ok:
++            self.verdict, self.reasons = PASS, []
++            return "pass"
++        self._fail(list(check.reasons))
++        return "fail"
++
++    def on_twist(self, linear_x: float) -> tuple:
++        """Returns (forward, newly_failed)."""
++        if self.goal_key is None:
++            return False, False
++        if not math.isfinite(linear_x) or linear_x < 0.0:
++            if self.verdict == FAIL:
++                return False, False
++            self._fail([f"reverse or invalid velocity command (linear.x={linear_x})"])
++            return False, True
++        forward = self.verdict == PASS and self.goal_status in (STATUS_ACCEPTED, STATUS_EXECUTING)
++        return forward, False
++
++    def fail_external(self, reason: str) -> bool:
++        if self.goal_key is None or self.verdict == FAIL:
++            return False
++        self._fail([reason])
++        return True
++
++    def _fail(self, reasons) -> None:
++        self.verdict, self.reasons = FAIL, reasons
++
++    def report(self) -> dict:
++        return {"verdict": self.verdict, "reasons": list(self.reasons),
++                "goal": self.goal_key, "goal_stamp": self.goal_stamp, "goal_status": self.goal_status,
++                "plan_stamp": self.plan_stamp, **({"plan": self.plan_report} if self.plan_report else {})}
++
++
++# ------------------------------------------------------------------ ROS node
++def _stamp(t) -> float:
++    return float(t.sec) + float(t.nanosec) * 1e-9
++
++
++def _quat_yaw(q) -> float:
++    return math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
++
++
++def main(argv=None) -> int:
++    import rclpy
++    from action_msgs.msg import GoalInfo, GoalStatusArray
++    from action_msgs.srv import CancelGoal
++    from geometry_msgs.msg import Twist
++    from nav_msgs.msg import OccupancyGrid, Path
++    from rclpy.node import Node
++    from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
++    from std_msgs.msg import Empty, String
++
++    latched = QoSProfile(depth=1, history=HistoryPolicy.KEEP_LAST, reliability=ReliabilityPolicy.RELIABLE,
++                         durability=DurabilityPolicy.TRANSIENT_LOCAL)
++
++    class PathGate(Node):
++        def __init__(self) -> None:
++            super().__init__("laksa_path_gate")
++            self.declare_parameter("input_topic", "/laksa/nav_cmd_vel_raw")
++            self.declare_parameter("output_topic", "/laksa/nav_cmd_vel")
++            self.declare_parameter("forward_only", True)
++            self.declare_parameter("log_path", os.path.expanduser("~/laksa_run/latest/path_gate.log"))
++            input_topic = str(self.get_parameter("input_topic").value)
++            output_topic = str(self.get_parameter("output_topic").value)
++            if input_topic == output_topic:
++                raise SystemExit("path_gate: input_topic and output_topic must differ")
++            self._forward_only = bool(self.get_parameter("forward_only").value)
++            self._log = self._open_log(str(self.get_parameter("log_path").value))
++            self._state = GateState()
++            self._grid = None
++            self._forwarded = 0
++            self._dropped = 0
++
++            self._out = self.create_publisher(Twist, output_topic, 10)
++            self._report_pub = self.create_publisher(String, "/laksa/path_gate", latched)
++            self._cancel_pub = self.create_publisher(Empty, "/laksa/cancel_navigation", 10)
++            self._cancel = self.create_client(CancelGoal, "/navigate_to_pose/_action/cancel_goal")
++            self.create_subscription(Twist, input_topic, self._twist_cb, 10)
++            self.create_subscription(Path, "/plan", self._plan_cb, 10)
++            self.create_subscription(OccupancyGrid, "/global_costmap/costmap", self._costmap_cb, latched)
++            self.create_subscription(GoalStatusArray, "/navigate_to_pose/_action/status", self._status_cb, latched)
++            self.create_timer(1.0, self._publish_report)
++            self._record("start", {"input": input_topic, "output": output_topic,
++                                   "forward_only": self._forward_only})
++
++        # -- logging / reporting
++        def _open_log(self, path):
++            parent = os.path.dirname(path)
++            # Never create ~/laksa_run/latest: the launcher owns that symlink.
++            if not os.path.isdir(parent):
++                self.get_logger().warn(f"{parent} does not exist: path_gate log goes to the ROS log only")
++                return None
++            return open(path, "a", buffering=1, encoding="utf-8")
++
++        def _record(self, event, extra=None):
++            entry = {"t": time.time(), "event": event, **self._state.report(),
++                     "forwarded": self._forwarded, "dropped": self._dropped, **(extra or {})}
++            line = json.dumps(entry, sort_keys=True)
++            if self._log is not None:
++                self._log.write(line + "\n")
++            if event in ("fail", "start"):
++                self.get_logger().warn(line)
++            else:
++                self.get_logger().info(line)
++            self._publish_report()
++
++        def _publish_report(self):
++            self._report_pub.publish(String(data=json.dumps(
++                {**self._state.report(), "forwarded": self._forwarded, "dropped": self._dropped}, sort_keys=True)))
++
++        # -- failure side effects
++        def _on_fail(self):
++            self._cancel_pub.publish(Empty())
++            if self._cancel.service_is_ready():
++                self._cancel.call_async(CancelGoal.Request(goal_info=GoalInfo()))   # zero id + stamp: cancel all
++            else:
++                self.get_logger().error("navigate_to_pose cancel service unavailable")
++            self._record("fail")
++
++        # -- callbacks
++        def _status_cb(self, message):
++            goals = [(bytes(s.goal_info.goal_id.uuid).hex(), _stamp(s.goal_info.stamp), int(s.status))
++                     for s in message.status_list]
++            if self._state.on_status(goals):
++                self._record("goal", {"active": self._state.goal_key is not None})
++
++        def _costmap_cb(self, message):
++            info = message.info
++            self._grid = Grid(data=np.asarray(message.data, dtype=np.int16).reshape(info.height, info.width),
++                              resolution=float(info.resolution), origin_x=float(info.origin.position.x),
++                              origin_y=float(info.origin.position.y), frame=message.header.frame_id,
++                              received=time.monotonic(), origin_yaw=_quat_yaw(info.origin.orientation))
++
++        def _plan_cb(self, message):
++            poses = [(p.pose.position.x, p.pose.position.y, _quat_yaw(p.pose.orientation)) for p in message.poses]
++            stamp = _stamp(message.header.stamp)
++            if self._state.goal_key is None or stamp <= (self._state.goal_stamp or 0.0):
++                self._record("plan_ignored", {"plan_stamp_seen": stamp})
++                return
++            check = check_plan(poses, message.header.frame_id, self._grid, time.monotonic(),
++                               forward_only=self._forward_only)
++            outcome = self._state.on_plan(stamp, check)
++            if outcome == "fail":
++                self._on_fail()
++            else:
++                self._record("plan_" + outcome, {"plan_stamp_seen": stamp})
++
++        def _twist_cb(self, message):
++            forward, newly_failed = self._state.on_twist(float(message.linear.x))
++            if forward:
++                self._out.publish(message)
++                self._forwarded += 1
++                return
++            self._dropped += 1
++            if newly_failed:
++                self._on_fail()
++
++    import rclpy.executors
++    rclpy.init(args=argv)
++    node = PathGate()
++    try:
++        rclpy.spin(node)
++    except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
++        pass
++    finally:
++        node.destroy_node()
++        if rclpy.ok():
++            rclpy.shutdown()
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main(sys.argv))
+diff --git a/firmware/esp32-s3/jetson/setup/tonight/restart_supervisor.sh b/firmware/esp32-s3/jetson/setup/tonight/restart_supervisor.sh
+new file mode 100755
+index 0000000..e85cddb
+--- /dev/null
++++ b/firmware/esp32-s3/jetson/setup/tonight/restart_supervisor.sh
+@@ -0,0 +1,99 @@
++#!/usr/bin/env bash
++# Restart only drive_supervisor with the arguments the launcher used
++# (supervisor_args= in ~/laksa_run/latest/session.txt), with
++# actuation_enabled set to $1.  Everything else keeps running.
++#
++#   restart_supervisor.sh false|true [--dry-run]
++#
++# --dry-run prints the command it would run and changes nothing.
++#
++# Refuses if anything other than the supervisor publishes /laksa/command or
++# /laksa/brake, before stopping it or after it has stopped.
++set -uo pipefail
++
++ACTUATION="${1:-}"
++DRY_RUN="${2:-}"
++if [[ "${ACTUATION}" != "true" && "${ACTUATION}" != "false" ]] || [[ -n "${DRY_RUN}" && "${DRY_RUN}" != "--dry-run" ]]; then
++    echo "usage: $0 false|true [--dry-run]" >&2; exit 64
++fi
++HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++RUN_DIR="${HOME}/laksa_run"
++PID_FILE="${RUN_DIR}/supervisor.pid"
++SESSION="$(readlink -f "${RUN_DIR}/latest" || true)"
++SESSION_FILE="${SESSION}/session.txt"
++
++export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
++export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
++unset RMW_IMPLEMENTATION CYCLONEDDS_URI
++set +u
++source /opt/ros/humble/setup.bash
++[[ -f "${HOME}/zed_ws/install/setup.bash" ]] && source "${HOME}/zed_ws/install/setup.bash"
++source "${HOME}/third_party/third_party_ws/install/setup.bash"
++source "${HOME}/laksa_ws/install/setup.bash"
++set -u
++
++die() { echo "restart_supervisor: $*" >&2; exit 1; }
++
++[[ -f "${PID_FILE}" ]] || die "no ${PID_FILE}: is the launcher running?"
++[[ -f "${SESSION_FILE}" ]] || die "no ${SESSION_FILE}"
++line="$(grep '^supervisor_args=' "${SESSION_FILE}" | tail -1)"
++[[ -n "${line}" ]] || die "${SESSION_FILE} has no supervisor_args= line (session started by an older launcher?)"
++eval "ARGS=(${line#supervisor_args=})"
++[[ ${#ARGS[@]} -gt 0 ]] || die "empty supervisor_args"
++
++# Same arguments, actuation_enabled replaced in place.
++found=0
++for i in "${!ARGS[@]}"; do
++    if [[ "${ARGS[$i]}" == actuation_enabled:=* ]]; then ARGS[$i]="actuation_enabled:=${ACTUATION}"; found=1; fi
++done
++[[ ${found} -eq 1 ]] || ARGS+=(-p "actuation_enabled:=${ACTUATION}")
++if [[ -n "${DRY_RUN}" ]]; then
++    echo "dry run: would restart pgid $(cat "${PID_FILE}") as:"
++    echo "  ros2 run laksa_bringup drive_supervisor_node.py --ros-args $(printf '%q ' "${ARGS[@]}")"
++    exit 0
++fi
++
++publishers() {   # prints "<topic> <count> <nodes>" per topic
++    python3 "${HERE}/topic_publishers.py" /laksa/command /laksa/brake
++}
++
++echo "before:"; before="$(publishers)"; echo "${before}" | sed 's/^/  /'
++while read -r topic count nodes; do
++    if [[ "${count}" -gt 1 || ( "${count}" -eq 1 && "${nodes}" != "drive_supervisor" ) ]]; then
++        die "refusing: ${topic} has publisher(s) other than drive_supervisor: ${nodes}"
++    fi
++done <<< "${before}"
++
++pid="$(cat "${PID_FILE}")"
++if kill -0 -- "-${pid}" 2>/dev/null; then
++    kill -INT -- "-${pid}" 2>/dev/null
++    for _ in $(seq 1 10); do kill -0 -- "-${pid}" 2>/dev/null || break; sleep 0.5; done
++    if kill -0 -- "-${pid}" 2>/dev/null; then
++        kill -TERM -- "-${pid}" 2>/dev/null
++        for _ in $(seq 1 6); do kill -0 -- "-${pid}" 2>/dev/null || break; sleep 0.5; done
++    fi
++    kill -0 -- "-${pid}" 2>/dev/null && die "supervisor process group ${pid} did not exit; not starting a second one"
++    echo "stopped supervisor (pgid ${pid})"
++else
++    echo "supervisor (pgid ${pid}) was not running"
++fi
++rm -f "${PID_FILE}"
++
++echo "after stop:"; after="$(publishers)"; echo "${after}" | sed 's/^/  /'
++while read -r topic count nodes; do
++    [[ "${count}" -eq 0 ]] || die "refusing to start: ${topic} still has publisher(s): ${nodes}"
++done <<< "${after}"
++
++echo "=== restart $(date -Is) actuation_enabled:=${ACTUATION}" >> "${SESSION}/supervisor.log"
++nohup setsid ros2 run laksa_bringup drive_supervisor_node.py --ros-args "${ARGS[@]}" \
++    >> "${SESSION}/supervisor.log" 2>&1 < /dev/null &
++echo $! > "${PID_FILE}"
++echo "started supervisor (pid $(cat "${PID_FILE}")): ros2 run laksa_bringup drive_supervisor_node.py --ros-args ${ARGS[*]}"
++
++for _ in $(seq 1 20); do
++    ros2 param get /drive_supervisor actuation_enabled >/dev/null 2>&1 && break
++    sleep 0.5
++done
++echo "actuation_enabled:   $(ros2 param get /drive_supervisor actuation_enabled 2>&1)"
++echo "navigation_max_erpm: $(ros2 param get /drive_supervisor navigation_max_erpm 2>&1)"
++echo "now:"; publishers | sed 's/^/  /'
+diff --git a/firmware/esp32-s3/jetson/setup/tonight/start_reliability.sh b/firmware/esp32-s3/jetson/setup/tonight/start_reliability.sh
+new file mode 100755
+index 0000000..f361749
+--- /dev/null
++++ b/firmware/esp32-s3/jetson/setup/tonight/start_reliability.sh
+@@ -0,0 +1,95 @@
++#!/usr/bin/env bash
++# Start-reliability loop: run setup/traction_bench.py N times at one speed and
++# tabulate each start.  WHEELS OFF THE GROUND, drive_supervisor stopped, a
++# person watching the car.
++#
++#   start_reliability.sh N [speed_mps=0.22] [gap_s=3]
++#
++# Each run is the bench's --steps ladder: brake 1 s, <speed> 3 s, brake 2 s.
++# A bench abort or refusal counts as a failed start and the loop continues.
++# The loop stops (without running the bench) if anything else publishes
++# /laksa/command or /laksa/brake.
++set -uo pipefail
++
++N="${1:-}"
++SPEED="${2:-0.22}"
++GAP="${3:-3}"
++if [[ ! "${N}" =~ ^[1-9][0-9]*$ || ! "${SPEED}" =~ ^-?[0-9]*\.?[0-9]+$ || ! "${GAP}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
++    echo "usage: $0 N [speed_mps=0.22] [gap_s=3]" >&2; exit 64
++fi
++HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
++BENCH="${HERE}/../traction_bench.py"
++
++export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
++export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
++unset RMW_IMPLEMENTATION CYCLONEDDS_URI
++set +u
++source /opt/ros/humble/setup.bash
++[[ -f "${HOME}/zed_ws/install/setup.bash" ]] && source "${HOME}/zed_ws/install/setup.bash"
++source "${HOME}/third_party/third_party_ws/install/setup.bash"
++source "${HOME}/laksa_ws/install/setup.bash"
++set -u
++
++OUT="${HOME}/laksa_run/start_reliability_$(date +%Y%m%dT%H%M%S)"
++mkdir -p "${OUT}"
++echo "start reliability: ${N} runs at ${SPEED} m/s, ${GAP} s apart -> ${OUT}"
++
++for i in $(seq 1 "${N}"); do
++    pubs="$(python3 "${HERE}/topic_publishers.py" /laksa/command /laksa/brake)"
++    if echo "${pubs}" | awk '$2 != 0 {bad=1} END {exit !bad}'; then
++        echo "STOPPING LOOP before run ${i}: another command publisher is present:" >&2
++        echo "${pubs}" | sed 's/^/  /' >&2
++        echo "${i} other-publisher" > "${OUT}/stopped"
++        break
++    fi
++    echo "--- run ${i}/${N}"
++    python3 "${BENCH}" --steps "${SPEED}" --csv "${OUT}/run_${i}.csv" > "${OUT}/run_${i}.log" 2>&1
++    echo "$?" > "${OUT}/run_${i}.rc"
++    grep -E "REFUSING|ABORT|first rotation|spin-down" "${OUT}/run_${i}.log" | sed 's/^/   /'
++    [[ ${i} -lt ${N} ]] && sleep "${GAP}"
++done
++
++python3 - "${OUT}" "${SPEED}" <<'PY'
++import csv, glob, os, re, sys
++out, speed = sys.argv[1], float(sys.argv[2])
++STEADY_S = 1.0          # mean of the last second of the 3 s step
++rows = []
++runs = sorted(glob.glob(os.path.join(out, "run_*.rc")), key=lambda p: int(re.findall(r"run_(\d+)", p)[0]))
++for rc_path in runs:
++    i = int(re.findall(r"run_(\d+)", rc_path)[0])
++    rc = int(open(rc_path).read().strip() or 99)
++    log = open(os.path.join(out, f"run_{i}.log"), errors="replace").read()
++    note = ""
++    m = re.search(r"(REFUSING TO START: .*|ABORT: .*)", log)
++    if m:
++        note = m.group(1)[:70]
++    samples = []
++    csv_path = os.path.join(out, f"run_{i}.csv")
++    if os.path.exists(csv_path):
++        with open(csv_path) as f:
++            samples = [r for r in csv.DictReader(f) if r["step"] == "1"]
++    spin = peak = steady = None
++    if samples:
++        t0 = float(samples[0]["t"])
++        for r in samples:
++            if abs(float(r["measured_erpm"])) > 100:
++                spin = float(r["t"]) - t0
++                break
++        peak = max(abs(float(r["motor_a"])) for r in samples)
++        t_end = float(samples[-1]["t"])
++        tail = [float(r["measured_erpm"]) for r in samples if float(r["t"]) >= t_end - STEADY_S]
++        steady = sum(tail) / len(tail) if tail else None
++    ok = rc == 0 and spin is not None
++    rows.append((i, rc, ok, spin, peak, steady, note))
++
++fmt = lambda v, f: "-" if v is None else f.format(v)
++print(f"\nstart reliability at {speed:+.2f} m/s  ({out})")
++print(f"{'run':>3}  {'exit':>4}  {'start':>5}  {'t_spin_s':>8}  {'peak_A':>6}  {'steady_eRPM':>11}  note")
++for i, rc, ok, spin, peak, steady, note in rows:
++    print(f"{i:>3}  {rc:>4}  {'OK' if ok else 'FAIL':>5}  {fmt(spin, '{:.2f}'):>8}  {fmt(peak, '{:.1f}'):>6}  "
++          f"{fmt(steady, '{:.0f}'):>11}  {note}")
++good = [r for r in rows if r[2]]
++spins = [r[3] for r in good]
++print(f"\n{len(good)}/{len(rows)} clean starts" + (f"; time to spin min/mean/max "
++      f"{min(spins):.2f}/{sum(spins)/len(spins):.2f}/{max(spins):.2f} s" if spins else ""))
++PY
+diff --git a/firmware/esp32-s3/jetson/setup/tonight/test_path_gate.py b/firmware/esp32-s3/jetson/setup/tonight/test_path_gate.py
+new file mode 100644
+index 0000000..ab2481e
+--- /dev/null
++++ b/firmware/esp32-s3/jetson/setup/tonight/test_path_gate.py
+@@ -0,0 +1,198 @@
++"""Unit tests for path_gate's geometry checks and verdict state machine (no ROS).
++
++    cd setup/tonight && python3 -m pytest -q test_path_gate.py
++"""
++
++import math
++import os
++import sys
++
++import numpy as np
++import pytest
++
++sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
++from path_gate import (FAIL, NONE, PASS, STATUS_EXECUTING, GateState, Grid,  # noqa: E402
++                       check_plan)
++
++NOW = 1000.0
++
++
++def free_grid(age=0.0, frame="map"):
++    # 10 x 10 m at 0.05 m, origin (-5, -5), all free.
++    return Grid(data=np.zeros((200, 200), dtype=np.int16), resolution=0.05, origin_x=-5.0, origin_y=-5.0,
++                frame=frame, received=NOW - age)
++
++
++def set_cells(grid, x0, x1, y0, y1, value):
++    c0, c1 = int((x0 - grid.origin_x) / grid.resolution), int((x1 - grid.origin_x) / grid.resolution)
++    r0, r1 = int((y0 - grid.origin_y) / grid.resolution), int((y1 - grid.origin_y) / grid.resolution)
++    grid.data[r0:r1 + 1, c0:c1 + 1] = value
++
++
++def straight(x0=0.0, x1=3.0, y=0.0, step=0.05):
++    xs = np.arange(x0, x1 + 1e-9, step)
++    return [(x, y, 0.0) for x in xs]
++
++
++def arc(radius, sweep=math.pi / 2, step=0.05):
++    n = int(radius * sweep / step) + 1
++    th = np.linspace(0.0, sweep, n)
++    # Left turn starting at the origin heading +x, centre (0, radius).
++    return [(radius * math.sin(t), radius - radius * math.cos(t), t) for t in th]
++
++
++def check(poses, grid=None, **kw):
++    return check_plan(poses, "map", free_grid() if grid is None else grid, NOW, **kw)
++
++
++# ------------------------------------------------------------- 1-8 geometry
++def test_01_straight_path_in_free_space_passes():
++    result = check(straight())
++    assert result.ok, result.reasons
++    assert result.length_m == pytest.approx(3.0, abs=0.06)
++    assert result.min_clearance_m is None           # nothing lethal nearby
++    assert result.cells_checked > 0
++
++
++def test_02_path_hugging_a_wall_fails():
++    grid = free_grid()
++    set_cells(grid, -1.0, 4.0, 0.15, 0.30, 100)     # wall inside the padded footprint (|y| <= 0.20)
++    result = check(straight(), grid)
++    assert not result.ok
++    assert any("cost >= 99" in r for r in result.reasons)
++    assert result.cells_blocked > 0
++
++
++def test_03_tight_arc_fails_on_curvature():
++    result = check(arc(0.75))
++    assert not result.ok
++    assert any("curvature" in r for r in result.reasons), result.reasons
++    assert result.max_curvature == pytest.approx(1 / 0.75, rel=0.05)
++
++
++def test_04_path_with_a_cusp_fails_forward_only():
++    forward = straight(0.0, 1.0)
++    back = [(x, 0.0, 0.0) for x in np.arange(0.95, 0.5 - 1e-9, -0.05)]   # reversing, same heading
++    result = check(forward + back)
++    assert not result.ok
++    assert any("forward-only" in r for r in result.reasons), result.reasons
++    assert result.cusps == 1 and result.reverse_segments > 0
++
++
++def test_05_path_crossing_one_unknown_cell_fails():
++    grid = free_grid()
++    set_cells(grid, 1.5, 1.5, 0.0, 0.0, -1)
++    result = check(straight(), grid)
++    assert not result.ok
++    assert result.cells_unknown == 1
++    assert any("unknown" in r for r in result.reasons)
++
++
++def test_06_path_leaving_the_grid_fails():
++    result = check(straight(0.0, 6.0))              # grid ends at x = 5
++    assert not result.ok
++    assert any("leaves the costmap" in r for r in result.reasons)
++
++
++def test_07_empty_path_fails():
++    result = check([])
++    assert not result.ok
++    assert result.reasons == ["empty path"]
++
++
++def test_08_costmap_older_than_3s_fails():
++    result = check(straight(), free_grid(age=3.5))
++    assert not result.ok
++    assert any("old" in r for r in result.reasons)
++    assert check(straight(), free_grid(age=2.5)).ok
++
++
++# --------------------------------------------------------- 9-11 state machine
++GOAL = [("g1", 100.0, STATUS_EXECUTING)]
++
++
++def passing():
++    return check(straight())
++
++
++def test_09_plan_stamped_before_the_goal_is_ignored():
++    state = GateState()
++    state.on_status(GOAL)
++    assert state.on_plan(99.5, passing()) == "ignored"
++    assert state.on_plan(100.0, passing()) == "ignored"     # not later than the goal
++    assert state.verdict == NONE
++    assert state.on_twist(0.2) == (False, False)
++    assert state.on_plan(100.5, passing()) == "pass"         # its own plan counts
++    assert state.verdict == PASS
++
++
++def test_10_after_fail_a_pass_looking_twist_is_not_forwarded():
++    state = GateState()
++    state.on_status(GOAL)
++    assert state.on_plan(101.0, check([])) == "fail"
++    assert state.verdict == FAIL
++    assert state.on_twist(0.2) == (False, False)
++    assert state.on_plan(102.0, passing()) == "ignored"      # FAIL latches for this goal
++    assert state.verdict == FAIL
++    assert state.on_twist(0.2) == (False, False)
++
++
++def test_11_negative_linear_x_is_not_forwarded_and_latches_fail():
++    state = GateState()
++    state.on_status(GOAL)
++    state.on_plan(101.0, passing())
++    assert state.on_twist(0.2) == (True, False)
++    assert state.on_twist(-0.05) == (False, True)
++    assert state.verdict == FAIL
++    assert state.on_twist(0.2) == (False, False)
++    assert state.on_twist(-0.05) == (False, False)           # already failed: no second cancel
++
++
++# ------------------------------------------------------------------- extras
++def test_arc_at_planner_minimum_radius_passes():
++    result = check(arc(1.09))
++    assert result.ok, result.reasons
++
++
++def test_cusp_allowed_when_not_forward_only_and_not_mistaken_for_curvature():
++    forward = straight(0.0, 1.0)
++    back = [(x, 0.0, 0.0) for x in np.arange(0.95, 0.5 - 1e-9, -0.05)]
++    result = check(forward + back, forward_only=False)
++    assert result.ok, result.reasons
++
++
++def test_wrong_frame_fails():
++    assert not check_plan(straight(), "odom", free_grid(), NOW).ok
++    assert not check_plan(straight(), "map", free_grid(frame="odom"), NOW).ok
++    assert not check_plan(straight(), "map", None, NOW).ok
++
++
++def test_clearance_is_reported():
++    grid = free_grid()
++    set_cells(grid, -1.0, 4.0, 0.50, 0.60, 100)
++    result = check(straight(), grid)
++    assert result.ok, result.reasons
++    assert 0.25 < result.min_clearance_m < 0.35             # wall at y >= 0.50, footprint edge 0.20
++
++
++def test_new_goal_resets_verdict_and_finished_goal_stops_forwarding():
++    state = GateState()
++    state.on_status(GOAL)
++    state.on_plan(101.0, check([]))
++    assert state.verdict == FAIL
++    assert state.on_status([("g1", 100.0, 5), ("g2", 200.0, STATUS_EXECUTING)]) is True
++    assert state.verdict == NONE and state.goal_key == "g2"
++    state.on_plan(201.0, passing())
++    assert state.on_twist(0.2) == (True, False)
++    state.on_status([("g2", 200.0, 4)])                  # SUCCEEDED
++    assert state.goal_key is None and state.verdict == NONE
++    assert state.on_twist(0.2) == (False, False)
++
++
++def test_canceling_goal_is_not_forwarded():
++    state = GateState()
++    state.on_status(GOAL)
++    state.on_plan(101.0, passing())
++    state.on_status([("g1", 100.0, 3)])                      # CANCELING
++    assert state.verdict == PASS
++    assert state.on_twist(0.2) == (False, False)
+diff --git a/firmware/esp32-s3/jetson/setup/tonight/topic_publishers.py b/firmware/esp32-s3/jetson/setup/tonight/topic_publishers.py
+new file mode 100755
+index 0000000..c8855f0
+--- /dev/null
++++ b/firmware/esp32-s3/jetson/setup/tonight/topic_publishers.py
+@@ -0,0 +1,40 @@
++#!/usr/bin/env python3
++"""Print the publisher count of each topic (after a discovery wait), one per line.
++
++    topic_publishers.py /laksa/command /laksa/brake
++    -> /laksa/command 1 drive_supervisor
++       /laksa/brake 1 drive_supervisor
++
++Exit status 0.  Used by restart_supervisor.sh and start_reliability.sh so they
++do not depend on the ros2 daemon's cache, which can list a node that just exited.
++"""
++
++import sys
++import time
++
++import rclpy
++
++
++def main() -> int:
++    topics = sys.argv[1:]
++    if not topics:
++        print(__doc__, file=sys.stderr)
++        return 64
++    rclpy.init()
++    node = rclpy.create_node("laksa_topic_publishers_probe")
++    try:
++        end = time.monotonic() + 2.0
++        while time.monotonic() < end:
++            rclpy.spin_once(node, timeout_sec=0.1)
++        for topic in topics:
++            infos = node.get_publishers_info_by_topic(topic)
++            names = ",".join(sorted(i.node_name for i in infos)) or "-"
++            print(f"{topic} {len(infos)} {names}")
++    finally:
++        node.destroy_node()
++        rclpy.shutdown()
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/firmware/esp32-s3/jetson/setup/tonight/vesc_logger.py b/firmware/esp32-s3/jetson/setup/tonight/vesc_logger.py
+new file mode 100755
+index 0000000..aa475f7
+--- /dev/null
++++ b/firmware/esp32-s3/jetson/setup/tonight/vesc_logger.py
+@@ -0,0 +1,214 @@
++#!/usr/bin/env python3
++"""Timestamped CSV of the drive chain, for stop-distance and brake-latency checks.
++
++    vesc_logger.py [record] [--out CSV]      record until Ctrl-C (listens only, never publishes)
++    vesc_logger.py --mark "STOP pressed"     append an event marker to the same CSV
++    vesc_logger.py analyze [CSV] [--event TEXT]
++
++Default CSV: ~/laksa_run/latest/vesc_log.csv.  One row per received message:
++  /laksa/vesc/state      all VescState fields used below
++  /laksa/command         speed_mps, steering_angle_rad, brake
++  /laksa/brake           brake
++  /laksa/mission_state   text
++  /laksa/emergency_stop  estop
++  /joy                   receive time only
++  mark                   text (from --mark)
++
++analyze: for every event (each mark, or else each rising edge of a brake
++request on /laksa/brake or /laksa/command, or of /laksa/emergency_stop) prints
++the time to VESC brake_active, the time until |measured_erpm| < 50, and the
++distance travelled meanwhile (integrated vehicle_linear_velocity_mps).
++"""
++
++from __future__ import annotations
++
++import argparse
++import csv
++import math
++import os
++import sys
++import time
++
++COLUMNS = ["t", "source", "measured_erpm", "requested_erpm", "active_erpm", "brake_active", "command_fresh",
++           "telemetry_fresh", "motor_current_a", "input_current_a", "input_voltage_v", "duty_cycle",
++           "vehicle_linear_velocity_mps", "tachometer", "fault_code", "speed_mps", "steering_angle_rad",
++           "brake", "estop", "text"]
++DEFAULT_CSV = os.path.expanduser("~/laksa_run/latest/vesc_log.csv")
++STOPPED_ERPM = 50.0
++
++
++def _line(values: dict) -> str:
++    """One CSV line; os.write of one line with O_APPEND keeps recorder and --mark lines whole."""
++    from io import StringIO
++    buffer = StringIO()
++    csv.writer(buffer).writerow([values.get(c, "") for c in COLUMNS])
++    return buffer.getvalue()
++
++
++def _append(path: str, values: dict) -> None:
++    new = not os.path.exists(path) or os.path.getsize(path) == 0
++    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
++    try:
++        if new:
++            os.write(fd, (",".join(COLUMNS) + "\r\n").encode())
++        os.write(fd, _line(values).encode())
++    finally:
++        os.close(fd)
++
++
++# ------------------------------------------------------------------ record
++def record(path: str) -> int:
++    import rclpy
++    from laksa_interfaces.msg import DriveCommand, VescState
++    from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
++    from sensor_msgs.msg import Joy
++    from std_msgs.msg import Bool, String
++
++    latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL)
++    rclpy.init()
++    node = rclpy.create_node("laksa_vesc_logger")
++    counts = {}
++
++    def write(source, **values):
++        counts[source] = counts.get(source, 0) + 1
++        _append(path, {"t": f"{time.time():.4f}", "source": source, **values})
++
++    def on_vesc(m):
++        write("vesc", measured_erpm=f"{m.measured_erpm:.1f}", requested_erpm=m.requested_erpm,
++              active_erpm=m.active_erpm, brake_active=int(m.brake_active), command_fresh=int(m.command_fresh),
++              telemetry_fresh=int(m.telemetry_fresh), motor_current_a=f"{m.motor_current_a:.2f}",
++              input_current_a=f"{m.input_current_a:.2f}", input_voltage_v=f"{m.input_voltage_v:.2f}",
++              duty_cycle=f"{m.duty_cycle:.4f}", vehicle_linear_velocity_mps=f"{m.vehicle_linear_velocity_mps:.4f}",
++              tachometer=m.tachometer, fault_code=m.fault_code)
++
++    node.create_subscription(VescState, "/laksa/vesc/state", on_vesc, qos_profile_sensor_data)
++    node.create_subscription(DriveCommand, "/laksa/command", lambda m: write(
++        "command", speed_mps=f"{m.speed_mps:.4f}", steering_angle_rad=f"{m.steering_angle_rad:.4f}",
++        brake=int(m.brake)), qos_profile_sensor_data)
++    node.create_subscription(Bool, "/laksa/brake", lambda m: write("brake", brake=int(m.data)),
++                             qos_profile_sensor_data)
++    node.create_subscription(String, "/laksa/mission_state", lambda m: write("mission_state", text=m.data), latched)
++    node.create_subscription(Bool, "/laksa/emergency_stop", lambda m: write("emergency_stop", estop=int(m.data)),
++                             latched)
++    node.create_subscription(Joy, "/joy", lambda m: write("joy"), qos_profile_sensor_data)
++    print(f"recording to {path} (Ctrl-C to stop; mark events with: {sys.argv[0]} --mark TEXT)", flush=True)
++    last = time.monotonic()
++    try:
++        while rclpy.ok():
++            rclpy.spin_once(node, timeout_sec=0.1)
++            if time.monotonic() - last > 10.0:
++                last = time.monotonic()
++                print("rows so far: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())), flush=True)
++    except KeyboardInterrupt:
++        pass
++    finally:
++        node.destroy_node()
++        if rclpy.ok():
++            rclpy.shutdown()
++    print("rows: " + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
++    return 0
++
++
++# ------------------------------------------------------------------ analyze
++def load(path: str) -> list:
++    with open(path, newline="") as f:
++        return list(csv.DictReader(f))
++
++
++def find_events(rows: list, event_text: str | None = None) -> list:
++    """[(t, label)] from marks, else from rising edges of brake / emergency stop requests."""
++    marks = [(float(r["t"]), "mark: " + r["text"]) for r in rows if r["source"] == "mark"
++             and (event_text is None or event_text in r["text"])]
++    if marks or event_text is not None:
++        return marks
++    events, previous = [], {}
++    for r in rows:
++        key = value = None
++        if r["source"] == "brake":
++            key, value = "brake", r["brake"] == "1"
++        elif r["source"] == "command":
++            key, value = "command.brake", r["brake"] == "1"
++        elif r["source"] == "emergency_stop":
++            key, value = "emergency_stop", r["estop"] == "1"
++        if key is None:
++            continue
++        if value and not previous.get(key, False):
++            events.append((float(r["t"]), key))
++        previous[key] = value
++    # Brake and command.brake usually rise together: keep the first of any within 0.2 s.
++    merged = []
++    for t, label in sorted(events):
++        if merged and t - merged[-1][0] < 0.2:
++            continue
++        merged.append((t, label))
++    return merged
++
++
++def analyze_event(rows: list, t0: float) -> dict:
++    vesc = [r for r in rows if r["source"] == "vesc" and float(r["t"]) >= t0]
++    out = {"t_brake_active": None, "t_stopped": None, "distance_m": None, "erpm_at_event": None}
++    before = [r for r in rows if r["source"] == "vesc" and float(r["t"]) < t0]
++    if before:
++        out["erpm_at_event"] = float(before[-1]["measured_erpm"])
++    distance, last_t, last_v = 0.0, t0, None
++    if before:
++        last_v = float(before[-1]["vehicle_linear_velocity_mps"])
++    for r in vesc:
++        t, v = float(r["t"]), float(r["vehicle_linear_velocity_mps"])
++        if last_v is not None and math.isfinite(v):
++            distance += 0.5 * (abs(v) + abs(last_v)) * (t - last_t)
++        last_t, last_v = t, v
++        if out["t_brake_active"] is None and r["brake_active"] == "1":
++            out["t_brake_active"] = t - t0
++        if out["t_stopped"] is None and abs(float(r["measured_erpm"])) < STOPPED_ERPM:
++            out["t_stopped"] = t - t0
++            out["distance_m"] = distance
++            break
++    return out
++
++
++def total_distance(rows: list) -> float:
++    vesc = [(float(r["t"]), float(r["vehicle_linear_velocity_mps"])) for r in rows if r["source"] == "vesc"]
++    return sum(0.5 * (abs(a[1]) + abs(b[1])) * (b[0] - a[0]) for a, b in zip(vesc, vesc[1:]))
++
++
++def analyze(path: str, event_text: str | None) -> int:
++    rows = load(path)
++    events = find_events(rows, event_text)
++    fmt = lambda v, f: "-" if v is None else f.format(v)
++    print(f"{path}: {len(rows)} rows, {sum(r['source'] == 'vesc' for r in rows)} VESC samples, "
++          f"total distance {total_distance(rows):.2f} m")
++    if not events:
++        print("no events (no marks, and no brake / emergency-stop rising edge)")
++        return 1
++    print(f"{'event':<34} {'eRPM@event':>10} {'to_brake_active_s':>17} {'to_<50eRPM_s':>12} {'distance_m':>10}")
++    for t0, label in events:
++        a = analyze_event(rows, t0)
++        print(f"{label[:34]:<34} {fmt(a['erpm_at_event'], '{:.0f}'):>10} {fmt(a['t_brake_active'], '{:.3f}'):>17} "
++              f"{fmt(a['t_stopped'], '{:.3f}'):>12} {fmt(a['distance_m'], '{:.3f}'):>10}")
++    return 0
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    parser.add_argument("command", nargs="?", default="record", choices=["record", "analyze"])
++    parser.add_argument("csv", nargs="?", default=None)
++    parser.add_argument("--out", default=None, help=f"CSV path (default {DEFAULT_CSV})")
++    parser.add_argument("--mark", default=None, help="append an event marker and exit")
++    parser.add_argument("--event", default=None, help="analyze: only marks containing this text")
++    args = parser.parse_args()
++    path = os.path.expanduser(args.out or args.csv or DEFAULT_CSV)
++    if args.mark is not None:
++        _append(path, {"t": f"{time.time():.4f}", "source": "mark", "text": args.mark})
++        print(f"marked '{args.mark}' in {path}")
++        return 0
++    if args.command == "analyze":
++        return analyze(path, args.event)
++    if not os.path.isdir(os.path.dirname(path)):
++        print(f"{os.path.dirname(path)} does not exist; pass --out", file=sys.stderr)
++        return 1
++    return record(path)
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/firmware/esp32-s3/jetson/setup/tonight/wait_spin.py b/firmware/esp32-s3/jetson/setup/tonight/wait_spin.py
+new file mode 100755
+index 0000000..2c7bbd3
+--- /dev/null
++++ b/firmware/esp32-s3/jetson/setup/tonight/wait_spin.py
+@@ -0,0 +1,81 @@
++#!/usr/bin/env python3
++"""Wait until the motor is really spinning at the commanded speed.
++
++Exits 0 and prints SPINNING once |measured_erpm| on /laksa/vesc/state stays at
++or above ratio * |target| for --hold seconds; exits 1 (TIMEOUT) if that has
++not happened within --timeout.  Stale telemetry does not count as spinning.
++Listens only: it never publishes.
++
++    wait_spin.py --target 911            # eRPM
++    wait_spin.py --target 911 --hold 0.5 --timeout 5 --ratio 0.8
++"""
++
++import argparse
++import math
++import sys
++import time
++
++
++class SpinDetector:
++    """Pure decision: feed (time, measured_erpm, fresh); ask done()."""
++
++    def __init__(self, target: float, ratio: float, hold: float) -> None:
++        self.threshold = ratio * abs(target)
++        self.hold = hold
++        self.since = None
++        self.peak = 0.0
++
++    def update(self, now: float, measured: float, fresh: bool) -> bool:
++        if fresh and math.isfinite(measured):
++            self.peak = max(self.peak, abs(measured))
++        if fresh and math.isfinite(measured) and abs(measured) >= self.threshold:
++            if self.since is None:
++                self.since = now
++        else:
++            self.since = None
++        return self.since is not None and now - self.since >= self.hold
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
++    parser.add_argument("--target", type=float, required=True, help="target eRPM (sign ignored)")
++    parser.add_argument("--ratio", type=float, default=0.8)
++    parser.add_argument("--hold", type=float, default=0.5, help="seconds above threshold")
++    parser.add_argument("--timeout", type=float, default=5.0)
++    args = parser.parse_args()
++    if not (math.isfinite(args.target) and args.target != 0.0 and 0.0 < args.ratio <= 1.0
++            and args.hold >= 0.0 and args.timeout > 0.0):
++        parser.error("need a non-zero target, 0 < ratio <= 1, hold >= 0, timeout > 0")
++
++    import rclpy
++    from laksa_interfaces.msg import VescState
++    from rclpy.qos import qos_profile_sensor_data
++
++    detector = SpinDetector(args.target, args.ratio, args.hold)
++    result = {"done": False}
++    rclpy.init()
++    node = rclpy.create_node("laksa_wait_spin")
++
++    def on_state(message):
++        if detector.update(time.monotonic(), float(message.measured_erpm), bool(message.telemetry_fresh)):
++            result["done"] = True
++
++    node.create_subscription(VescState, "/laksa/vesc/state", on_state, qos_profile_sensor_data)
++    start = time.monotonic()
++    try:
++        while not result["done"] and time.monotonic() - start < args.timeout:
++            rclpy.spin_once(node, timeout_sec=0.05)
++    finally:
++        node.destroy_node()
++        rclpy.shutdown()
++    elapsed = time.monotonic() - start
++    if result["done"]:
++        print(f"SPINNING after {elapsed:.2f} s (|eRPM| >= {detector.threshold:.0f} for {args.hold:.2f} s)")
++        return 0
++    print(f"TIMEOUT after {args.timeout:.1f} s: peak |eRPM| {detector.peak:.0f}, needed {detector.threshold:.0f} "
++          f"for {args.hold:.2f} s", file=sys.stderr)
++    return 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+-- 
+2.34.1
+
