@@ -26,3 +26,4 @@ unchanged and note the disagreement in the result file instead.
 | ESTOP-bench B1–B7 | FAIL at B4 (pin 15 floats HIGH when disconnected; needs external pull-down) | 20260930T085612Z | [results/ESTOP-bench-B1-B7_20260930T085612Z.md](results/ESTOP-bench-B1-B7_20260930T085612Z.md) |
 | ESTOP-bench Part 1 (B3 db5, B5 long, B6, B7) | PASS; B4 still open pending Rx polarity flip | 20260930T091248Z | [results/ESTOP-bench-part1_20260930T091248Z.md](results/ESTOP-bench-part1_20260930T091248Z.md) |
 | ESTOP-freshness-smoke | PASS 6/6 (supervisor relaunched with require_operator:=false override; kill -9 → latch 485 ms) | 20260930T092123Z | [results/ESTOP-freshness-smoke_20260930T092123Z.md](results/ESTOP-freshness-smoke_20260930T092123Z.md) |
+| ESTOP-wheelslift | BLOCKED: ESP32 no VESC/IMU telemetry; bootloader WDT loop at battery connect (09:32) | 20260930T095237Z | [results/ESTOP-wheelslift-blocked_20260930T095237Z.md](results/ESTOP-wheelslift-blocked_20260930T095237Z.md) |
