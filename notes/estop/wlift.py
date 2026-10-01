@@ -16,7 +16,7 @@ import argparse, os, signal, sys, time
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, qos_profile_sensor_data
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, String, Int32
 from sensor_msgs.msg import Joy
 from laksa_interfaces.msg import DriveCommand, VehicleState
 
@@ -33,6 +33,8 @@ ap.add_argument("--duration", type=float, default=20.0)
 ap.add_argument("--rearm", action="store_true", help="press Y before driving")
 ap.add_argument("--kill-bridge-at", type=float, default=None,
                 help="seconds into the throttle phase to signal the bridge")
+ap.add_argument("--ramp", default=None, help="comma list of eRPM presets, e.g. 900,1300,1500")
+ap.add_argument("--step-sec", type=float, default=3.0)
 ap.add_argument("--signal", choices=["TERM", "KILL"], default="TERM")
 a = ap.parse_args()
 a.duration = min(a.duration, MAX_DURATION)
@@ -108,6 +110,14 @@ n.create_subscription(String, "/laksa/emergency_stop_reason", on_reason, LATCHED
 n.create_subscription(DriveCommand, "/laksa/command", on_cmd, 10)
 n.create_subscription(VehicleState, "/laksa/state", on_state, qos_profile_sensor_data)
 joy = n.create_publisher(Joy, "/joy", 10)
+preset = n.create_publisher(Int32, "/laksa/manual_speed_erpm", LATCHED)
+RAMP = [int(x) for x in a.ramp.split(",")] if a.ramp else []
+if RAMP:
+    a.duration = min(MAX_DURATION, a.step_sec * len(RAMP))
+
+
+def set_preset(v):
+    preset.publish(Int32(data=v)); log(f"manual_speed_erpm preset -> {v}")
 
 
 def send(throttle=0.0, y=0):
@@ -136,6 +146,8 @@ def run(seconds, throttle=0.0, y=0):
 def neutral_exit(code):
     try:
         run(1.0, 0.0)
+        if RAMP:
+            set_preset(900); run(0.3, 0.0)
     finally:
         print("RESULT", {k: (ts(v) if isinstance(v, float) and v > 1e9 else v) for k, v in ev.items()}, flush=True)
         if ev["trigger"]:
@@ -162,7 +174,12 @@ try:
     log(f"THROTTLE {THROTTLE} for {a.duration:.0f} s")
     t0 = time.time()
     killed = False
+    step = -1
     while time.time() - t0 < a.duration:
+        if RAMP:
+            k = min(int((time.time() - t0) // a.step_sec), len(RAMP) - 1)
+            if k != step:
+                step = k; set_preset(RAMP[k])
         run(0.05, THROTTLE)
         if a.kill_bridge_at is not None and not killed and time.time() - t0 >= a.kill_bridge_at:
             pid = int(open(PIDF).read())
