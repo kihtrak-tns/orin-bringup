@@ -4,7 +4,7 @@ import time, rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
 rclpy.init(); n = Node("press_y_once"); p = n.create_publisher(Joy, "/joy", 10)
-end = time.time() + 0.6
+end = time.time() + 2.0
 while time.time() < end: rclpy.spin_once(n, timeout_sec=0.05)
 for b in (0, 1, 0):
     m = Joy(); m.header.frame_id = "joy"; m.header.stamp = n.get_clock().now().to_msg()
