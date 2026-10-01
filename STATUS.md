@@ -33,3 +33,4 @@ unchanged and note the disagreement in the result file instead.
 | CARSTILL investigation | D: ESP32 alive, VESC UART silent (seq 0, 0 V), IMU absent; e-stop clear | 20261001T040201Z | [results/CARSTILL-investigation_20261001T040201Z.md](results/CARSTILL-investigation_20261001T040201Z.md) |
 | VESC UART link | UP after operator TX/RX swap fix (seq rising ~5 Hz, 15.6 V, fault 0) | 20261001T070314Z | [results/VESC-uart-link-restored_20261001T070314Z.md](results/VESC-uart-link-restored_20261001T070314Z.md) |
 | SPIN attempt | NO MOTION: ESP32 requested_erpm 0 with PCA9685 unplugged (2268 I2C errors); reconnect PCA | 20261001T071117Z | [results/SPIN-attempt-pca-absent_20261001T071117Z.md](results/SPIN-attempt-pca-absent_20261001T071117Z.md) |
+| SPIN 900 (PCA connected) | PASS: req 900, meas 709–1125 eRPM, stopped ≤0.87 s after release | 20261001T071958Z | [results/SPIN-900-pca-connected_20261001T071958Z.md](results/SPIN-900-pca-connected_20261001T071958Z.md) |
