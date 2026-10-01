@@ -31,3 +31,4 @@ unchanged and note the disagreement in the result file instead.
 | ESTOP supervisor-follows-Tx | PASS 5/5 (bridge as systemd service; latch 5 ms after Tx STOP) | 20260930T235347Z | [results/ESTOP-supervisor-follows-Tx_20260930T235347Z.md](results/ESTOP-supervisor-follows-Tx_20260930T235347Z.md) |
 | ESTOP ramp attempt | NO MOTION: supervisor braked on VESC telemetry stale (e-stop clear) | 20261001T035626Z | [results/ESTOP-ramp-attempt_20261001T035626Z.md](results/ESTOP-ramp-attempt_20261001T035626Z.md) |
 | CARSTILL investigation | D: ESP32 alive, VESC UART silent (seq 0, 0 V), IMU absent; e-stop clear | 20261001T040201Z | [results/CARSTILL-investigation_20261001T040201Z.md](results/CARSTILL-investigation_20261001T040201Z.md) |
+| VESC UART link | UP after operator TX/RX swap fix (seq rising ~5 Hz, 15.6 V, fault 0) | 20261001T070314Z | [results/VESC-uart-link-restored_20261001T070314Z.md](results/VESC-uart-link-restored_20261001T070314Z.md) |
