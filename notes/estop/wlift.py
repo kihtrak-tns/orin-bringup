@@ -95,8 +95,11 @@ def on_state(m):
     st["erpm"] = e
     ev["peak_erpm"] = max(ev["peak_erpm"], abs(e)) if phase == "drive" else ev["peak_erpm"]
     now = time.time()
-    if now - last_erpm_print[0] >= 1.0:
-        log(f"measured_erpm = {e:.0f}  (fault {m.vesc.fault_code}, {m.vesc.input_voltage_v:.1f} V)")
+    if now - last_erpm_print[0] >= (0.25 if phase == "drive" else 1.0):
+        v = m.vesc
+        log(f"measured_erpm = {e:.0f}  req={v.requested_erpm} act={v.active_erpm} cmd_fresh={v.command_fresh} "
+            f"brake={v.brake_active} dir_pend={v.direction_change_pending} I_mot={v.motor_current_a:.2f} A "
+            f"I_in={v.input_current_a:.2f} A duty={v.duty_cycle:.3f} (fault {v.fault_code}, {v.input_voltage_v:.1f} V)")
         last_erpm_print[0] = now
     if ev["trigger"] is not None and ev["wheels_stop"] is None and abs(e) < STOP_ERPM:
         ev["wheels_stop"] = now

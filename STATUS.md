@@ -32,3 +32,4 @@ unchanged and note the disagreement in the result file instead.
 | ESTOP ramp attempt | NO MOTION: supervisor braked on VESC telemetry stale (e-stop clear) | 20261001T035626Z | [results/ESTOP-ramp-attempt_20261001T035626Z.md](results/ESTOP-ramp-attempt_20261001T035626Z.md) |
 | CARSTILL investigation | D: ESP32 alive, VESC UART silent (seq 0, 0 V), IMU absent; e-stop clear | 20261001T040201Z | [results/CARSTILL-investigation_20261001T040201Z.md](results/CARSTILL-investigation_20261001T040201Z.md) |
 | VESC UART link | UP after operator TX/RX swap fix (seq rising ~5 Hz, 15.6 V, fault 0) | 20261001T070314Z | [results/VESC-uart-link-restored_20261001T070314Z.md](results/VESC-uart-link-restored_20261001T070314Z.md) |
+| SPIN attempt | NO MOTION: ESP32 requested_erpm 0 with PCA9685 unplugged (2268 I2C errors); reconnect PCA | 20261001T071117Z | [results/SPIN-attempt-pca-absent_20261001T071117Z.md](results/SPIN-attempt-pca-absent_20261001T071117Z.md) |
