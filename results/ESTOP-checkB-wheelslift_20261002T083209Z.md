@@ -1,4 +1,4 @@
-# Check B: wheel-lift actuation kill via hardware e-stop. Telemetry PASS 3/3 (operator confirmation pending)
+# Check B: wheel-lift actuation kill via hardware e-stop. PASS 3/3 (telemetry + operator confirmed)
 
 Run at: 2026-10-02 08:31:33–08:36:33 UTC. Car on blocks, wheels off the ground, main battery connected (15.0 V).
 Deployed release `laksa-car-20261002T0336-21af14f` with `hardware_estop_enabled: true` and the edge-reset fix
@@ -100,8 +100,8 @@ Telemetry: **PASS 3/3.** Wheels stopped 323–521 ms after the Tx press (limit 1
 Observation: requested 900 eRPM (0.217 m/s), measured peak 1273 eRPM (+41%) unloaded on blocks.
 Check speed overshoot before ground runs.
 
-## Human confirmation needed
-Operator: confirm that you saw the wheels stop within ~1 s on all three trials and stay stopped until REARM.
+## Human confirmation
+Operator confirmed (2026-10-02): the wheels stopped within ~1 s on all three trials and stayed stopped until REARM.
 
 ## State left
 **actuation_enabled=true**, cruise cap 900, battery connected, supervisor rearmed (not latched).
