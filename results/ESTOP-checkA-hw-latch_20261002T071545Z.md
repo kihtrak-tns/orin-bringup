@@ -57,8 +57,9 @@ Earlier attempt (06:59) did not measure the latch: the supervisor was already la
 Supervisor LATCHED (car braked), actuation_enabled=false.
 
 ## Blockers for Check B
-- VESC UART silent: `/laksa/state` telemetry_sequence 0, input_voltage_v 0.0 (console "Battery 0.0 V").
-  Same as [CARSTILL](CARSTILL-investigation_20261001T040201Z.md).
+- VESC unpowered: `/laksa/state` telemetry_sequence 0, input_voltage_v 0.0 (console "Battery 0.0 V").
+  Expected, not a fault: the operator confirmed the main battery was unplugged throughout Check A.
+  Check B needs the battery connected.
 - No manual throttle without the Xbox. Check B would need HOLD TO RUN (autonomy) with a lowered cap.
 - A rearm path that works reliably.
 
